@@ -12,8 +12,10 @@ Verified against **OpenCode 1.18.35** (`@opencode-ai/plugin` 1.18.27 type surfac
 
 ## What the model sees
 
-An extra system-role entry per request (values are computed per request; this is
-an example, not a template):
+An extra **trailing user message** per request (values are computed per request;
+this is an example, not a template). The block rides at the tail of the message
+list, after all history, so everything before it stays byte-stable for
+provider-side KV prefix caching:
 
 ```text
 [OpenCode time context]
@@ -33,6 +35,14 @@ Timing rule: use the timestamps above when you refer to how long ago something h
 
 Typical size: ~700–1500 characters (≈180–380 tokens), hard-capped by
 `maxBlockChars` (default 1500 chars).
+
+**Why the tail and not the system prompt:** provider prefix caches are positional
+— any change near the front invalidates everything after it. A per-second `Now`
+block in the system layer recomputed the entire history of long sessions every
+turn (observed as full-history prefill storms and prefix-cache hit rates pinned
+at ~17%). At the tail, cache hits cover the whole history and only the genuinely
+new turn tokens are recomputed. The synthetic message is request-only: it is
+never written into the stored transcript, so nothing on disk ever goes stale.
 
 ### Where each timestamp comes from
 
@@ -150,22 +160,23 @@ also dropped into the auto-scanned `~/.config/opencode/plugin/`) can register
 
 ## Request scope
 
-- Injected: every primary agent model call — the initial call of a turn, each
+- Injected: every primary agent model call that flows through
+  `experimental.chat.messages.transform` — the initial call of a turn, each
   tool-continuation step, and retries; plus subagent sessions (a child session
-  gets its **own** timeline — parent history is never mixed in).
-- Skipped: compaction-summary calls (detected via the in-flight compaction
-  assistant message), requests without a session (e.g. `opencode agent create`),
-  and synthetic sessions that leave no trace in the session store (e.g.
-  project-name generation).
-- Known leak: **title generation** runs concurrently with the primary stream and
-  is indistinguishable from it through this version's hook inputs, so it carries
-  the block for one request at session start. Harmless (~150 tokens); documented
-  here because the scope claim would otherwise be wrong.
+  gets its **own** timeline — parent history is never mixed in). All historical
+  values are derived per request from the payload itself, so restarts/resumes
+  and mid-session model switches need no warm-up.
+- Skipped: requests with no user message in the payload, sessions whose
+  in-flight work is only auxiliary agents (compaction/title/summary pending
+  messages via the event stream), and filtered-out models per the lists below.
+- Known leaks, both harmless (~250 tokens in prompts that recompute anyway):
+  title generation runs inline and can carry the block; compaction calls can
+  carry it when their in-flight message event has not landed yet. Neither
+  touches stored transcripts.
 
-The block is ephemeral: it is computed per request and only appended to the
-outgoing system array. It is never written into user messages or persisted
-transcripts, and exactly one plugin-owned block exists per request (a stale block
-on a reused array is replaced in place).
+The block is ephemeral: exactly one plugin-owned row per request, replaced if
+the same payload is re-transformed, never persisted, and never injected into
+the canonical user message text.
 
 ## Diagnostics and failure behavior
 

@@ -8,9 +8,9 @@ invariants, and verification recipes you must not break.
 
 ```
 src/core.ts    Pure logic: config parsing, timezones/offsets, durations,
-               model filtering, anchor selection, block assembly. No imports
-               besides nothing (dependency-free). Fully unit-tested.
-src/hooks.ts   State registry + hook implementations. Imports core.
+               model filtering, anchor selection, block assembly. Fully
+               unit-tested, no opencode imports.
+src/hooks.ts   Event mirror + the messages.transform injection. Imports core.
 src/index.ts   Plugin entry. MUST export only the default plugin function.
 test/          node:test suites driving core directly and hooks via stubs.
 ```
@@ -33,29 +33,29 @@ against the actual installed version before changing hook usage.
 
 - V1-style promise API: plugin module default-exports
   `(input: PluginInput, options?) => Promise<Hooks>`.
-- `experimental.chat.system.transform({sessionID?, model}, {system: string[]})`
-  fires inside `LLMRequestPrep.prepare` once per model-visible request — initial
-  call, every tool-continuation step, and retries. Awaited; mutate
-  `output.system` in place. Entries land as system-role messages (or joined
-  `instructions` on the OAuth/workflow paths). `model.providerID` + `model.id`
-  are the request's actual model, evaluated per request (mid-session switches
-  and subagents covered by construction).
-- `chat.message({sessionID, ...}, {message, parts})` is awaited at user-message
-  admission; `message.time.created` is the admission time (epoch ms).
+- `experimental.chat.messages.transform({}, {messages})` fires in
+  `SessionPrompt.run`'s per-step loop once per model-visible request — initial
+  call, every tool-continuation step, retries — right before
+  `toModelMessagesEffect` converts the rows. The payload is rebuilt from the
+  store per call, so appended rows are request-only (never persisted) and the
+  site is self-sufficient: history, session, and model identity all come from
+  the payload (`msg.info`) — no seeding fetch required. Conversions preserve
+  array order and include user text parts (`synthetic` allowed).
+- Provider prefix caching is positional: byte changes near the prompt front
+  invalidate all later cache blocks. Never put per-request changing text in
+  `system[]` entries — that's why injection moved from
+  `experimental.chat.system.transform` (v1 of this plugin) to the tail.
 - `event({event})` is fire-and-forget (not awaited). `message.updated` carries
-  the full message info (`UserMessage.time.created`; `AssistantMessage`
-  `time.created`/`time.completed`, `mode`, `summary`);
-  `message.part.updated` carries tool parts (`state.time.start/end`,
-  `state.status`). Events are near-synchronous in-process, but the hooks treat
-  them as eventually-consistent; the bounded seed read is the backstop.
-- `client.session.messages({path:{id}, query:{limit}})` returns persisted
-  `{info, parts}[]` — the authoritative resume source.
+  assistant `mode`/`summary`/`time` — enough to gate auxiliary agents.
 - `client.app.log({body:{service, level, message, extra}})` is the logging
   channel; `--print-logs` surfaces it on stderr for `opencode run`.
 - Plugin options come from the config tuple `["file://…/index.ts", {…}]`.
-  Config/plugins load once at process start; no hot reload.
-- Session storage (`~/.local/share/opencode/opencode.db`) outlives process
-  restarts; `AssistantMessage.summary: true` marks compaction summaries.
+  Config/plugins load once at process start; no hot reload — module code is
+  cached per process, so plugin source edits need a full OpenCode restart
+  (instance churn alone does not reload code).
+- The per-request model identity is on the turn's latest user message
+  (`info.model.providerID/modelID`), snapshotted at admission — no event
+  ordering dependency for the filter.
 
 ### Loading pitfalls (real, observed)
 
@@ -84,8 +84,9 @@ against the actual installed version before changing hook usage.
 1. Never cache "now". Compute per request via the injected clock (`deps.now`).
    Historical message times are cached and refreshed incrementally — never the
    current time.
-2. Exactly one plugin block per request: sweep the `[OpenCode time context]`
-   marker before pushing. Never touch other system entries or user messages.
+2. Exactly one plugin block per request: sweep rows with the ephemeral message
+   id before appending. Never touch real rows — only ever append one synthetic
+   trailing user message; history must stay byte-stable for prefix caching.
 3. Fail open everywhere: hooks must not throw (a rejected hook poisons the
    request). Wrap hook bodies in try/catch; on errors skip or degrade, never
    fabricate timestamps. Missing/invalid times → omit that line. Negative
@@ -99,14 +100,15 @@ against the actual installed version before changing hook usage.
    entry equal to the bare `modelID` matches that model on any provider.
    Exclusion wins. Unknown identity: inject when no filters configured; skip +
    log one diagnostic when filters exist. Evaluated per request, never at init.
-7. Bounded resources: per-session maps capped; registry LRU-capped; seed read
-   `limit: 64`; block hard-capped by `maxBlockChars`. No unbounded history scan
-   on the request path.
-8. Request scope: primary agent turns + subagent turns only. Skip when the only
-   pending assistant(s) are aux modes (`compaction`/`title`/`summary` or
-   `summary: true`), when there is no sessionID, or when the session has no
-   trace anywhere (synthetic ids). Title generation leaks the block on its one
-   request — known, inherent to this hook's inputs, documented in README.
+7. Bounded resources: per-session maps capped; registry LRU-capped; block
+   hard-capped by `maxBlockChars`. All history values come from the single
+   request payload — no unbounded history scan, no extra fetches.
+8. Request scope: primary agent turns + subagent turns only. Skip when the
+   payload has no user message, or when the event mirror says the session's
+   only pending assistant work is auxiliary (`compaction`/`title`/`summary`
+   modes or `summary: true`). Title generation and late-evented compaction may
+   still carry the block — known and harmless (~250 tokens, prompts that
+   recompute anyway), documented in README.
 9. ASCII-only in the injected block (quotes, dashes): some model pipelines mangle
    Unicode punctuation. Tests pin this implicitly via exact-match regexes.
 
@@ -115,14 +117,17 @@ against the actual installed version before changing hook usage.
 - `src/core.ts` is pure and knows nothing about OpenCode; push all
   decisions there (timezones, offsets, durations, filters, anchor selection,
   block assembly) so they stay testable without a server.
-- `src/hooks.ts` owns: per-session mirror (`users`/`assistants`/`tools`/
-  `pendingAssistants`), chat.message admission capture, event merging, the
-  one-time seed fetch (`seed: never → ok|failed`, promise-collapsed), the
-  injection gate (enabled → model filter → sessionID → aux check →
-  reality check → build → marker sweep → push), logging.
+- `src/hooks.ts` owns: the event mirror (only `pendingAssistants` for aux-mode
+  gating), the `experimental.chat.messages.transform` handler
+  (enabled → sessionID from payload → aux gate → model from latest user
+  message → derive marks from payload rows → build → sweep stale ephemeral row
+  → append synthetic trailing message), and logging.
 - Offsets come from `Intl` with `timeZoneName: "longOffset"`, recomputed per
   instant (DST-safe). Config timezone validated once at init; host local
   timezone is the fallback and the default.
+- Placement invariant: the block is the LAST row of the payload. Everything
+  before it must stay byte-identical across requests of a session (tests pin
+  this against byte-equality). Only ever append; never edit real rows.
 
 ## Testing
 
