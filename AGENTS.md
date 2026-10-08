@@ -176,3 +176,73 @@ no restart of other sessions needed for verification.
   OpenCode plugin package version for type fidelity.
 - README is for humans (install/config/support); this file is for agents.
   Update both when behavior, options, or invariants change.
+
+## Decisions (with rationale — read before re-litigating)
+
+Mechanism-level facts live in "Verified runtime contract" above; this section
+records the judgment calls and their rejected alternatives.
+
+1. **Tail append, not system-layer injection.** A volatile per-request string in
+   `system[]` sits before the whole history; positional KV prefix caches then
+   invalidate everything after it each turn (measured on vLLM-B300: hit rate
+   pinned ~17% with full-history prefills every ~35 s). Same failure fixed
+   third-party in opencode-agent-memory PR #25 (~10% → ~90% hit rate).
+   Rejected alternative: revert to `system.transform` with minute-bucketed
+   timestamps — still periodic full-prefill storms, and it degrades the core
+   feature (freshness) to save a problem we no longer have.
+2. **Per-request refresh, not diff-gated re-emission.** Codex re-emits its env
+   date only when it changes (day granularity) and its open issue #38333
+   documents a "repetition attractor" from identical text repeated across tool
+   loops. We accept per-request refresh because: the block lives in the tail
+   region that recomputes regardless (zero cache cost), the content changes
+   every request (which defeats attractor drift, unlike Codex's static repeat),
+   and the feature's entire premise is sub-minute freshness across long turns.
+   Fallback hedge if tool-loop repetition symptoms ever appear: add a refresh
+   interval option (e.g. refresh Now at most every N seconds within a turn).
+3. **Ephemeral-only, never persisted.** The block exists only in the outgoing
+   request payload. Anything written into the stored transcript permanently
+   freezes the claim ("15 sec ago" forever) — that's the failure mode of
+   message-mutation plugins like opencode-time-refresh. afriemann/opencode-timed
+   is the good prior art for this discipline; its tradeoff (in-memory store
+   empties on restart, old stamps vanish) we avoid by deriving everything from
+   persisted payload metadata instead of recording it ourselves.
+4. **Filtering is exact-match with exclusion winning, evaluated per request.**
+   Rejected: substring/fuzzy matching (accidental matches across similar model
+   ids, the exact thing the task warned about) and init-time filtering (breaks
+   on mid-session model switch). Model identity comes from the latest user
+   message's snapshot, so per-request evaluation is free of event ordering.
+5. **Aux-suppression tolerates rare leaks over risky synchronous gating.**
+   Title generation runs inline without touching our hook; a compaction whose
+   in-flight assistant event hasn't landed yet may carry one block (~250 tokens
+   into a prompt that recomputes anyway). Deliberately accepted: the
+   alternative (blocking the request path to query state) violates fail-open.
+6. **Single-layer config only.** Declaring the plugin in two config layers
+   double-registers it in 1.18.35 with competing options (verified live).
+   We document the pitfall instead of building config-snapshot merging to
+   defend against it.
+
+## Future: V2 plugin API adapter
+
+The plugin currently targets the V1 promise-hook API (this install:
+OpenCode 1.18.35 / @opencode-ai/plugin 1.18.27). The newer V2 API
+(`@opencode/plugin`, `ctx.session.hook(...)`) arrives with a newer opencode
+build. Port plan when it lands locally, following the afriemann/opencode-timed
+adapter pattern:
+
+1. `src/core.ts` is already runtime-agnostic — unchanged.
+2. New `src/plugin.v2.ts` thin adapter: register on `ctx.session.hook("context")`
+   for per-call injection (V2's context event exposes both `event.system` and
+   the ephemeral `event.messages`, per the V1↔V2 hook collapse), and take model
+   identity from `event.model` (providerID/id) instead of the payload's last
+   user message — **confirm in the installed V2 types before trusting it**;
+   payload derivation stays as the fallback.
+3. `ctx.session.hook("prompt")` at admission time is for recording only — never
+   mutate `event.prompt.text` (it belongs to the persisted-input family;
+   afriemann's D3 evidence plus our own ephemeral-only decision D3 above).
+4. Same invariants apply verbatim (tail append, byte-stable head, fail-open).
+5. Distribution wiring at that point: pick up `exports["./v2"]`/`server` module
+   shape per then-current docs; keep V1 entry until the local install drops it.
+
+Also track before investing in the port: anomalyco/opencode issues #47251 /
+#48639 / #45570 (native per-turn time context demand) — a core feature could
+supersede this plugin outright.
