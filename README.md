@@ -121,20 +121,13 @@ If a request's model identity is unavailable: with empty include/exclude lists
 injection proceeds; with any filters configured it is skipped and a one-line
 diagnostic is logged (never silently claiming an unverified match).
 
-### Double-declaration pitfall
+### Declare it exactly once
 
-OpenCode 1.18.35's config merge **concatenates `plugin` arrays across layers and
-at least one code path loads the same file both specified-in-config and
-dir-scanned**. Declaring this plugin in more than one place (e.g. global config
-*and* a project `opencode.json`, or also dropping it into a scanned
-`~/.config/opencode/plugin/` directory) can register it **twice**; the request is
-then governed by whichever registration ran. Declare it exactly once — normally
-just the global array entry above.
-
-Relatedly: `src/index.ts` must export only the plugin function. OpenCode's legacy
-module adapter registers *every* function-valued export as a plugin. That's why
-the hook wiring lives in `src/hooks.ts` (imported by tests) and the entry module
-has a single default export.
+Declare the plugin in exactly one config file. In OpenCode 1.18.35 the same file
+declared in two places (e.g. global config *and* a project `opencode.json`, or
+also dropped into the auto-scanned `~/.config/opencode/plugin/`) can register
+**twice** with competing options. Stick to the single global entry above.
+(Technical background lives in AGENTS.md.)
 
 ## Request scope
 
@@ -173,23 +166,24 @@ injection for that request) — OpenCode keeps working normally.
   `~/.config/opencode/opencode.jsonc` (restart OpenCode). This repo can remain on
   disk; nothing else references it.
 
-## Development
+## Verify it works
+
+Ask the model to quote the block — a reply containing it proves the injection
+reached the model-visible request (silent when excluded):
 
 ```bash
-npm install
-npm test         # node --test, native TS (Node >= 23.6), fake clock + fake session data
-npm run typecheck
-```
-
-Model-visible verification recipe (what the smoke tests did):
-
-```bash
-# in any scratch dir with a configured provider/model:
+# in any scratch dir:
 opencode run -m local-vllm/moonshotai/Kimi-K3 \
   'Without calling any tool: if your instructions contain a block starting
    with "[OpenCode time context]", quote that whole block verbatim; otherwise
    reply exactly NO_BLOCK'
 ```
 
-The model quoting the block proves the injection reached the provider-visible
-request (debug logging alone would not).
+## Contributing
+
+```bash
+npm install && npm test && npm run typecheck
+```
+
+Architecture, the verified OpenCode runtime contract, design invariants, and
+deeper smoke recipes live in [AGENTS.md](AGENTS.md).
