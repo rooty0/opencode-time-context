@@ -65,8 +65,19 @@ against the actual installed version before changing hook usage.
    over the configured one. Entry module: one default export, nothing else.
 2. **Cross-layer double declaration is not deduped** by file URL: the same file
    auto-discovered under `~/.config/opencode/plugin/` AND listed in a config
-   array (or listed in two config layers) registers twice with competing
+   array (or listed in two server-config layers) registers twice with competing
    options. Documented in README; declare the plugin in exactly one place.
+3. **Server and TUI loading are separate.** The Plugins window lists only the
+   TUI host, which reads `plugin` arrays from `tui.json` files (global/project),
+   NOT the server `plugin` array in `opencode.jsonc`. A no-op TUI half
+   (`src/tui.ts`) is registered so the plugin shows as active there.
+4. **One module = one half.** `readV1Plugin` throws if a default export has both
+   `server` and `tui`. Both halves live in one directory and are dispatched via
+   `src/package.json` `exports` (`./server`, `./tui`) — the same pattern npm
+   plugins use. A package.json with NO `./server` export would still fall back
+   to the file itself as the server entry; the explicit export just documents
+   intent. The canonical spec `file://…/src/index.ts` is valid in both
+   `opencode.jsonc` (server) and `tui.json` (tui).
 
 ## Invariants — do not break these
 

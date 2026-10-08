@@ -1,0 +1,8 @@
+{
+  "name": "opencode-time-context",
+  "type": "module",
+  "exports": {
+    "./server": "./index.ts",
+    "./tui": "./tui.ts"
+  }
+}

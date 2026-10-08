@@ -76,6 +76,25 @@ directly.
 restart OpenCode (or run a new `opencode run`/`opencode` process) after changing
 this file, the plugin source, or options. Running sessions keep the old code.
 
+### Seeing it in the TUI "Plugins" window
+
+The Plugins window lists plugins that have a TUI half registered in `tui.json`
+(the server `plugin` array in `opencode.jsonc` is not read by that window).
+`src/tui.ts` provides a minimal no-op TUI surface for exactly that; the user's
+`~/.config/opencode/tui.json` already contains:
+
+```json
+"plugin": [
+  "@prevalentware/opencode-goal-plugin",
+  "file:///ABS/PATH/opencode-time-context/src/index.ts"
+]
+```
+
+so the plugin appears as `opencode-time-context … active` under External. The
+window's active/inactive toggle controls only that no-op TUI surface — it does
+**not** disable injection. To disable the plugin use `"enabled": false` in the
+server options below, or uninstall.
+
 ## Configuration
 
 Turn the string entry into a tuple to set options (only in the **one** config file
