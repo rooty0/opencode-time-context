@@ -192,6 +192,17 @@ function dateKeyFormatterFor(tz: string): Intl.DateTimeFormat {
   return fmt
 }
 
+const weekdayCache = new Map<string, Intl.DateTimeFormat>()
+/** "Thursday" — weekday names prevent models from botching date-to-weekday arithmetic. */
+export function weekdayName(epochMs: number, tz: string): string {
+  let fmt = weekdayCache.get(tz)
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat("en-US", { timeZone: tz, weekday: "long" })
+    weekdayCache.set(tz, fmt)
+  }
+  return fmt.format(new Date(epochMs))
+}
+
 /** "America/Los_Angeles"-aware local date key, e.g. "2026-10-07". */
 export function localDateKey(epochMs: number, tz: string): string {
   const parts = dateKeyFormatterFor(tz).formatToParts(new Date(epochMs))
@@ -317,8 +328,10 @@ export function selectAnchors(
   tools: ToolMark[],
   limit: number,
   now: number,
+  omit?: ReadonlyArray<Anchor>,
 ): Anchor[] {
   if (limit <= 0) return []
+  const omitted = new Set((omit ?? []).map((a) => `${a.time}|${a.label}`))
   const candidates: Anchor[] = []
   for (const u of users) {
     if (!isSaneTimestamp(u.created) || u.created > now + FUTURE_TOLERANCE_MS) continue
@@ -336,7 +349,7 @@ export function selectAnchors(
   const seen = new Set<string>()
   const deduped = candidates.filter((a) => {
     const key = `${a.time}|${a.label}`
-    if (seen.has(key)) return false
+    if (omitted.has(key) || seen.has(key)) return false
     seen.add(key)
     return true
   })
@@ -388,7 +401,7 @@ export function buildBlock(input: BlockInput): string {
 
   const lines: string[] = [
     BLOCK_START,
-    `Now: ${formatLocalTime(now, timezone)} (${timezone})`,
+    `Now: ${formatLocalTime(now, timezone)} (${weekdayName(now, timezone)}, ${timezone})`,
     `UTC now: ${formatUtc(now)}`,
   ]
 
@@ -407,7 +420,11 @@ export function buildBlock(input: BlockInput): string {
     )
   }
 
-  let anchors = selectAnchors(input.users, input.assistants, input.tools, input.historyAnchorsLimit, now)
+  // Headline lines already cover these two facts; don't restamp them in the timeline.
+  const omit: Anchor[] = []
+  if (latest) omit.push({ time: latest.created, label: "user message" })
+  if (latestAssistant !== undefined) omit.push({ time: latestAssistant, label: "assistant message completed" })
+  let anchors = selectAnchors(input.users, input.assistants, input.tools, input.historyAnchorsLimit, now, omit)
   const timelineHeader = "Recent timeline (recorded message/event times):"
   const withAnchors = (list: Anchor[]) =>
     list.length === 0

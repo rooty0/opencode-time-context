@@ -234,6 +234,17 @@ describe("config parsing", () => {
   })
 })
 
+describe("weekday labeling", () => {
+  test("Now line carries the weekday name for the configured zone", () => {
+    // 2026-10-07 20:31 -07:00 LA = Wednesday there; UTC is already Thursday
+    const now = Date.UTC(2026, 9, 8, 3, 31, 0, 0)
+    const block = buildBlock({ ...baseInput, now })
+    assert.match(block, /Now: 2026-10-07 20:31:00 -07:00 \(Wednesday, America\/Los_Angeles\)/)
+    const utcBlock = buildBlock({ ...baseInput, timezone: "UTC", now })
+    assert.match(utcBlock, /Now: 2026-10-08 03:31:00 \+00:00 \(Thursday, UTC\)/)
+  })
+})
+
 describe("timeline anchors", () => {
   const now = Date.UTC(2026, 9, 8, 3, 31, 0, 0)
 
@@ -253,6 +264,34 @@ describe("timeline anchors", () => {
     const times = anchors.map((a) => a.time)
     assert.deepEqual([...times].sort((a, b) => a - b), times) // chronological
     assert.equal(times.at(-1), now - 15_000) // newest anchor last
+  })
+
+  test("omit list excludes headline-covered facts from the anchor selection", () => {
+    const users: UserMark[] = [
+      { id: "u1", created: now - 600_000 },
+      { id: "u2", created: now - 15_000 },
+    ]
+    const omit = [{ time: now - 15_000, label: "user message" }]
+    const anchors = selectAnchors(users, [], [], 6, now, omit)
+    assert.deepEqual(anchors.map((a) => a.time), [now - 600_000])
+  })
+
+  test("buildBlock never restamps the latest user / latest assistant completion in the timeline", () => {
+    const block = buildBlock({
+      ...baseInput,
+      now,
+      users: [
+        { id: "u1", created: now - 300_000 },
+        { id: "u2", created: now - 15_000 },
+      ],
+      assistants: [{ id: "a1", created: now - 200_000, completed: now - 62_000, mode: "build" }],
+    })
+    const timeline = block.split("Recent timeline (recorded message/event times):")[1] ?? ""
+    const timelineBody = timeline.split("Timing rule:")[0] ?? ""
+    assert.doesNotMatch(timelineBody, /- .* — user message$[\s\S]*Latest user message/m) // sanity
+    // the two headline facts (u2 at now-15s, a1 at now-62s) must not reappear as anchors
+    assert.equal((timelineBody.match(/— user message$/gm) ?? []).length, 1) // only u1
+    assert.equal((timelineBody.match(/— assistant message completed$/gm) ?? []).length, 0)
   })
 
   test("excludes records with unknown semantics or unreliable times", () => {
@@ -297,7 +336,7 @@ describe("block assembly", () => {
     assert.match(block, /Latest user message: 2026-10-07 20:25:45 -07:00 \(5 min 15 sec ago\)/)
     // no age field may claim "yesterday" or "day(s) ago"
     assert.doesNotMatch(block, /\((?:yesterday|[^)]*days?) ago\)/i)
-    assert.match(block, new RegExp(`^Now: 2026-10-07 20:31:00 -07:00 \\(America/Los_Angeles\\)$`, "m"))
+    assert.match(block, new RegExp(`^Now: 2026-10-07 20:31:00 -07:00 \\(Wednesday, America/Los_Angeles\\)$`, "m"))
     assert.match(block, /^UTC now: 2026-10-08T03:31:00\.000Z$/m)
   })
 

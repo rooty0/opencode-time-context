@@ -326,10 +326,10 @@ describe("model filtering per outgoing request", () => {
     deps.setClock(T0)
     const hooks = createTimeContextHooks(deps)
     const block = blockOf(await transform(hooks, [userRow("s1", "u1", T0 - 1_000)]))!
-    assert.match(block, /\(America\/Los_Angeles\)/)
+    assert.match(block, /\([A-Za-z]+, America\/Los_Angeles\)/)
     const overridden = createTimeContextHooks({ ...deps, options: { timezone: "UTC" } })
     const block2 = blockOf(await transform(overridden, [userRow("s2", "u1", T0 - 1_000)]))!
-    assert.match(block2, /Now: 2026-10-08 03:20:00 \+00:00 \(UTC\)/)
+    assert.match(block2, /Now: 2026-10-08 03:20:00 \+00:00 \(Thursday, UTC\)/)
   })
 
   test("unknown model identity: allowed with no filters, skipped with diagnostic when filters exist (matrix #14)", async () => {

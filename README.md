@@ -19,7 +19,7 @@ provider-side KV prefix caching:
 
 ```text
 [OpenCode time context]
-Now: 2026-10-07 20:31:00 -07:00 (America/Los_Angeles)
+Now: 2026-10-07 20:31:00 -07:00 (Wednesday, America/Los_Angeles)
 UTC now: 2026-10-08T03:31:00.000Z
 Latest user message: 2026-10-07 20:30:45 -07:00 (15 sec ago)
 Previous user message: 2026-10-07 20:25:30 -07:00 (5 min 15 sec before latest)
@@ -27,11 +27,16 @@ Latest assistant completion: 2026-10-07 20:29:02 -07:00 (1 min 58 sec ago)
 Recent timeline (recorded message/event times):
 - 20:24:10 -07:00 — user message
 - 20:25:30 -07:00 — user message
-- 20:29:02 -07:00 — assistant message completed
-- 20:30:45 -07:00 — user message
+- 20:28:47 -07:00 — tool "bash" finished
 Timing rule: use the timestamps above when you refer to how long ago something happened; conversation order alone does not tell you when events occurred. A message timestamp marks when that message was created, admitted, or completed, not when some external action finished. If timing is unknown, say "earlier" or "previously" rather than guessing "yesterday" or "last week".
 [/OpenCode time context]
 ```
+
+The weekday label on `Now` is intentional: models botch date→weekday arithmetic
+surprisingly often, and the label makes it free. The timeline deliberately omits
+the two facts that already have headline lines (latest user message, latest
+assistant completion) so the block stays lean. Same-day anchors show time only;
+older anchors keep their full local date.
 
 Typical size: ~700–1500 characters (≈180–380 tokens), hard-capped by
 `maxBlockChars` (default 1500 chars).
