@@ -214,6 +214,18 @@ opencode run -m local-vllm/moonshotai/Kimi-K3 \
    reply exactly NO_BLOCK'
 ```
 
+## Prior art / ecosystem
+
+- [afriemann/opencode-timed](https://github.com/afriemann/opencode-timed) — the
+  only other transient, non-persistent request-layer time injector. Differences:
+  it prefixes every user message with bare ISO stamps (spread across the whole
+  history), vs. this plugin's single tail-placed block with elapsed times and an
+  event timeline. Actively maintained, npm-unpublished.
+- `opencode-time-refresh` (npm) injects time by mutating persisted user messages
+  — an anti-pattern this plugin avoids entirely (nothing here is stored).
+- Upstream demand is tracked in anomalyco/opencode issues #47251/#48639/#45570;
+  a native core solution may supersede this plugin someday.
+
 ## Contributing
 
 ```bash
