@@ -1,0 +1,17 @@
+{
+  "name": "opencode-time-context",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenCode plugin that injects a fresh, compact time-context block (current time + recorded message timestamps) into the system context of every primary model request. Model-agnostic by default with optional include/exclude model filtering.",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "scripts": {
+    "test": "node --test test/",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.18.27",
+    "@types/bun": "^1.4.0",
+    "typescript": "^5.8.2"
+  }
+}
