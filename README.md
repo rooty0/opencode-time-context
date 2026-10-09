@@ -25,9 +25,9 @@ Latest user message: 2026-10-07 20:30:45 -07:00 (15 sec ago)
 Previous user message: 2026-10-07 20:25:30 -07:00 (5 min 15 sec before latest)
 Latest assistant completion: 2026-10-07 20:29:02 -07:00 (1 min 58 sec ago)
 Recent timeline (recorded message/event times):
-- 20:24:10 -07:00 — user message
-- 20:25:30 -07:00 — user message
-- 20:28:47 -07:00 — tool "bash" finished
+- 20:24:10 -07:00 - user message
+- 20:25:30 -07:00 - user message
+- 20:28:47 -07:00 - tool "bash" finished
 Timing rule: use the timestamps above when you refer to how long ago something happened; conversation order alone does not tell you when events occurred. A message timestamp marks when that message was created, admitted, or completed, not when some external action finished. If timing is unknown, say "earlier" or "previously" rather than guessing "yesterday" or "last week".
 [/OpenCode time context]
 ```
@@ -42,7 +42,7 @@ Typical size: ~700–1500 characters (≈180–380 tokens), hard-capped by
 `maxBlockChars` (default 1500 chars).
 
 **Why the tail and not the system prompt:** provider prefix caches are positional
-— any change near the front invalidates everything after it. A per-second `Now`
+- any change near the front invalidates everything after it. A per-second `Now`
 block in the system layer recomputed the entire history of long sessions every
 turn (observed as full-history prefill storms and prefix-cache hit rates pinned
 at ~17%). At the tail, cache hits cover the whole history and only the genuinely
@@ -61,7 +61,7 @@ never written into the stored transcript, so nothing on disk ever goes stale.
 | timeline `tool "..." finished/failed` | `ToolPart.state.time.end` | when a tool call settled |
 
 No message text, tool arguments/outputs, file contents, or conversation bodies are
-ever included — only roles, coarse event kinds, tool names, and times.
+ever included - only roles, coarse event kinds, tool names, and times.
 
 Timestamps are gathered from the in-process event stream (`message.updated` /
 `message.part.updated`) and the `chat.message` admission hook; on the first request
@@ -106,14 +106,14 @@ The Plugins window lists plugins that have a TUI half registered in `tui.json`
 ```
 
 so the plugin appears as `opencode-time-context … active` under External. The
-window's active/inactive toggle controls only that no-op TUI surface — it does
+window's active/inactive toggle controls only that no-op TUI surface - it does
 **not** disable injection. To disable the plugin use `"enabled": false` in the
 server options below, or uninstall.
 
 ## Configuration
 
 Turn the string entry into a tuple to set options (only in the **one** config file
-where the plugin is declared — see "Double-declaration pitfall" below):
+where the plugin is declared - see "Double-declaration pitfall" below):
 
 ```jsonc
 "plugin": [
@@ -134,7 +134,7 @@ where the plugin is declared — see "Double-declaration pitfall" below):
 | `enabled` | boolean | `true` | `false` disables injection entirely. |
 | `includeModels` | string[] | `[]` | Empty = all models eligible. Nonempty = only matches are eligible. |
 | `excludeModels` | string[] | `[]` | Blocks matches; **exclusion wins** when both lists match. |
-| `timezone` | string (IANA) | host local timezone | Timezone for the `Now:`/local timestamps. Validated at startup; invalid values fall back to the host timezone with a warning. Note: this is the timezone of the machine running the OpenCode process — if you run OpenCode on a remote host, that's the remote host's timezone. |
+| `timezone` | string (IANA) | host local timezone | Timezone for the `Now:`/local timestamps. Validated at startup; invalid values fall back to the host timezone with a warning. Note: this is the timezone of the machine running the OpenCode process - if you run OpenCode on a remote host, that's the remote host's timezone. |
 | `historyAnchorsLimit` | integer 0–12 | `6` | Max number of timeline anchors. `0` omits the timeline. |
 | `maxBlockChars` | integer 300–4000 | `1500` | Hard cap on the injected block; oldest anchors are shed first. |
 | `debug` | boolean | `false` | Logs each injected block (timestamps only, never prompt contents) to OpenCode's log. |
@@ -144,9 +144,9 @@ where the plugin is declared — see "Double-declaration pitfall" below):
 Matching is exact and case-sensitive (no substrings, no regex). Each entry is
 compared against per-request model identity:
 
-- `"local-vllm/moonshotai/Kimi-K3"` — matches provider `local-vllm` + model
+- `"local-vllm/moonshotai/Kimi-K3"` - matches provider `local-vllm` + model
   `moonshotai/Kimi-K3` only. This is the canonical form; prefer it.
-- `"moonshotai/Kimi-K3"` (exactly the model ID) — matches that model on **any**
+- `"moonshotai/Kimi-K3"` (exactly the model ID) - matches that model on **any**
   provider. Convenience form; model IDs may contain `/`, so both forms are tried.
 
 The filter is evaluated on **every outgoing model request** (not at startup), so
@@ -166,9 +166,9 @@ also dropped into the auto-scanned `~/.config/opencode/plugin/`) can register
 ## Request scope
 
 - Injected: every primary agent model call that flows through
-  `experimental.chat.messages.transform` — the initial call of a turn, each
+  `experimental.chat.messages.transform` - the initial call of a turn, each
   tool-continuation step, and retries; plus subagent sessions (a child session
-  gets its **own** timeline — parent history is never mixed in). All historical
+  gets its **own** timeline - parent history is never mixed in). All historical
   values are derived per request from the payload itself, so restarts/resumes
   and mid-session model switches need no warm-up.
 - Skipped: requests with no user message in the payload, sessions whose
@@ -192,7 +192,7 @@ conversation content is never logged.
 
 Everything fails open: storage/API errors, bad options, invalid timestamps, or
 unexpected shapes disable only the affected feature of the block (or skip
-injection for that request) — OpenCode keeps working normally.
+injection for that request) - OpenCode keeps working normally.
 
 ## Disable / uninstall
 
@@ -203,7 +203,7 @@ injection for that request) — OpenCode keeps working normally.
 
 ## Verify it works
 
-Ask the model to quote the block — a reply containing it proves the injection
+Ask the model to quote the block - a reply containing it proves the injection
 reached the model-visible request (silent when excluded):
 
 ```bash
@@ -216,13 +216,13 @@ opencode run -m local-vllm/moonshotai/Kimi-K3 \
 
 ## Prior art / ecosystem
 
-- [afriemann/opencode-timed](https://github.com/afriemann/opencode-timed) — the
+- [afriemann/opencode-timed](https://github.com/afriemann/opencode-timed) - the
   only other transient, non-persistent request-layer time injector. Differences:
   it prefixes every user message with bare ISO stamps (spread across the whole
   history), vs. this plugin's single tail-placed block with elapsed times and an
   event timeline. Actively maintained, npm-unpublished.
 - `opencode-time-refresh` (npm) injects time by mutating persisted user messages
-  — an anti-pattern this plugin avoids entirely (nothing here is stored).
+  - an anti-pattern this plugin avoids entirely (nothing here is stored).
 - Upstream demand is tracked in anomalyco/opencode issues #47251/#48639/#45570;
   a native core solution may supersede this plugin someday.
 
