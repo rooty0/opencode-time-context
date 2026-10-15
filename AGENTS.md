@@ -11,14 +11,16 @@ src/core.ts    Pure logic: config parsing, timezones/offsets, durations,
                model filtering, anchor selection, block assembly. Fully
                unit-tested, no opencode imports.
 src/hooks.ts   Event mirror + the messages.transform injection. Imports core.
-src/index.ts   Plugin entry. MUST export only the default plugin function.
+src/plugin.v2.ts V2 context hook + read-only timestamp lookup.
+server.ts      V2 directory entry; tui.ts is its no-op TUI half.
+src/index.ts   V1 plugin entry. MUST export only the default plugin function.
 test/          node:test suites driving core directly and hooks via stubs.
 ```
 
 ## Commands
 
 ```bash
-npm install          # devDeps: typescript, @opencode-ai/plugin 1.18.27, @types/bun
+npm install          # devDeps include both V1 and V2 plugin SDK types
 npm test             # node --test; Node >= 23.6 runs .ts natively (type stripping)
 npm run typecheck    # tsc --noEmit --strict
 ```
@@ -82,8 +84,7 @@ against the actual installed version before changing hook usage.
 ## Invariants — do not break these
 
 1. Never cache "now". Compute per request via the injected clock (`deps.now`).
-   Historical message times are cached and refreshed incrementally — never the
-   current time.
+   Historical message times are derived per request; no timestamp cache.
 2. Exactly one plugin block per request: sweep rows with the ephemeral message
    id before appending. Never touch real rows — only ever append one synthetic
    trailing user message; history must stay byte-stable for prefix caching.
@@ -98,11 +99,12 @@ against the actual installed version before changing hook usage.
    only its own timeline. `Session.parentID` is not used to merge.
 6. Model matching is exact and case-sensitive: full `providerID/modelID`, or an
    entry equal to the bare `modelID` matches that model on any provider.
-   Exclusion wins. Unknown identity: inject when no filters configured; skip +
-   log one diagnostic when filters exist. Evaluated per request, never at init.
+   Exclusion wins. Unknown identity: inject when no filters configured; skip when filters exist (V1 dedupes diagnostics; V2 logs per request
+   only with debug enabled). Evaluated per request, never at init.
 7. Bounded resources: per-session maps capped; registry LRU-capped; block
-   hard-capped by `maxBlockChars`. All history values come from the single
-   request payload — no unbounded history scan, no extra fetches.
+   hard-capped by `maxBlockChars`. V1 history comes from the single
+   request payload. V2 reads active context with a deadline and processes only
+   the last 64 records (see the V2 contract below).
 8. Request scope: primary agent turns + subagent turns only. Skip when the
    payload has no user message, or when the event mirror says the session's
    only pending assistant work is auxiliary (`compaction`/`title`/`summary`
@@ -110,7 +112,7 @@ against the actual installed version before changing hook usage.
    still carry the block — known and harmless (~250 tokens, prompts that
    recompute anyway), documented in README.
 9. ASCII-only in the injected block (quotes, dashes): some model pipelines mangle
-   Unicode punctuation. Tests pin this implicitly via exact-match regexes.
+   Unicode punctuation. An explicit ASCII test covers timeline punctuation.
 
 ## Design map
 
@@ -165,7 +167,7 @@ cd /private/tmp/oc-filter && opencode run -m local-vllm/moonshotai/Kimi-K3 \
 #    parent's). See git history / smoke logs for observed outputs.
 ```
 
-`opencode run` boots a fresh process, so it always loads current code/config —
+V1 `opencode run` boots a fresh process; V2 requires `--standalone` to do so —
 no restart of other sessions needed for verification.
 
 ## House style
@@ -221,28 +223,34 @@ records the judgment calls and their rejected alternatives.
    We document the pitfall instead of building config-snapshot merging to
    defend against it.
 
-## Future: V2 plugin API adapter
+## V2 runtime contract (OpenCode / @opencode/plugin 2.0.25)
 
-The plugin currently targets the V1 promise-hook API (this install:
-OpenCode 1.18.35 / @opencode-ai/plugin 1.18.27). The newer V2 API
-(`@opencode/plugin`, `ctx.session.hook(...)`) arrives with a newer opencode
-build. Port plan when it lands locally, following the afriemann/opencode-timed
-adapter pattern:
-
-1. `src/core.ts` is already runtime-agnostic — unchanged.
-2. New `src/plugin.v2.ts` thin adapter: register on `ctx.session.hook("context")`
-   for per-call injection (V2's context event exposes both `event.system` and
-   the ephemeral `event.messages`, per the V1↔V2 hook collapse), and take model
-   identity from `event.model` (providerID/id) instead of the payload's last
-   user message — **confirm in the installed V2 types before trusting it**;
-   payload derivation stays as the fallback.
-3. `ctx.session.hook("prompt")` at admission time is for recording only — never
-   mutate `event.prompt.text` (it belongs to the persisted-input family;
-   afriemann's D3 evidence plus our own ephemeral-only decision D3 above).
-4. Same invariants apply verbatim (tail append, byte-stable head, fail-open).
-5. Distribution wiring at that point: pick up `exports["./v2"]`/`server` module
-   shape per then-current docs; keep V1 entry until the local install drops it.
-
-Also track before investing in the port: anomalyco/opencode issues #47251 /
-#48639 / #45570 (native per-turn time context demand) — a core feature could
-supersede this plugin outright.
+- Root `server.ts` default-exports `{id, setup}`. `setup` awaits registration
+  and returns a cleanup that disposes it. Root `tui.ts` is a no-op V2 definition.
+  V2 local directory loading resolves these files. Keep `src/index.ts` and
+  `src/package.json` unchanged for the separate legacy V1 entry.
+- `src/plugin.v2.ts` registers only `ctx.session.hook("context")`, per primary
+  model request, including tool continuations and subagents. Auxiliary title,
+  compaction, and generate requests have separate hooks; do not register them.
+- Request model identity is `event.model.providerID/id`. Messages expose IDs,
+  roles, and content but **no recorded timestamps**. Append a plain trailing
+  user model message; never mutate the admission `prompt` hook or system array.
+- Necessary exception to V1's no-extra-fetch rule: read the public
+  `ctx.session.context({sessionID})` once per eligible request. It returns the
+  whole active context, without a limit argument. Process only its last 64
+  records and intersect outgoing message IDs. This avoids reintroducing pruned
+  history or treating synthetic/compaction user-role messages as real users.
+  No history pagination, private API, database access, or cached message bodies.
+- Context lookup races a one-second deadline and abort signal. Missing history
+  degrades to fresh current time. Error objects are not logged (they may contain
+  prompt text). All state is per invocation; no cross-session timestamp cache.
+- Stored V2 user/assistant `time.created/completed` and assistant tool
+  `time.completed` are numeric epoch milliseconds through the promise API.
+- `test/v2.test.ts` verifies fresh tail-only injection, byte-stable prefix,
+  deduplication, filters, failures/timeouts, session isolation, bounded record
+  processing, privacy, and registration disposal. Both SDK dependencies are
+  type-only; production has no third-party runtime imports.
+- For V2 smoke tests use the directory URL and `opencode run --standalone`
+  with isolated XDG directories. Ask the real model to quote its final block,
+  resume the session, check a tool continuation, test exclusion, and inspect
+  stored message IDs to ensure the ephemeral row was not persisted.

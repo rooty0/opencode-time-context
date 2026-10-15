@@ -288,10 +288,10 @@ describe("timeline anchors", () => {
     })
     const timeline = block.split("Recent timeline (recorded message/event times):")[1] ?? ""
     const timelineBody = timeline.split("Timing rule:")[0] ?? ""
-    assert.doesNotMatch(timelineBody, /- .* — user message$[\s\S]*Latest user message/m) // sanity
+    assert.doesNotMatch(timelineBody, /- .* - user message$[\s\S]*Latest user message/m) // sanity
     // the two headline facts (u2 at now-15s, a1 at now-62s) must not reappear as anchors
-    assert.equal((timelineBody.match(/— user message$/gm) ?? []).length, 1) // only u1
-    assert.equal((timelineBody.match(/— assistant message completed$/gm) ?? []).length, 0)
+    assert.equal((timelineBody.match(/- user message$/gm) ?? []).length, 1) // only u1
+    assert.equal((timelineBody.match(/- assistant message completed$/gm) ?? []).length, 0)
   })
 
   test("excludes records with unknown semantics or unreliable times", () => {
@@ -394,4 +394,25 @@ describe("block assembly", () => {
     assert.ok(block.length <= 700, `block length ${block.length}`)
     assert.match(block, /Timing rule:/)
   })
+})
+
+test("hard cap holds at the minimum for every supported timezone", () => {
+  for (const timezone of Intl.supportedValuesOf("timeZone")) {
+    const block = buildBlock({ ...baseInput, now: Date.UTC(2026, 9, 15), timezone, maxBlockChars: 300 })
+    assert.ok(block.length <= 300, `${timezone}: ${block.length}`)
+    assert.ok(block.endsWith(BLOCK_END))
+    assert.match(block, /Timing rule:/)
+  }
+})
+
+test("headline timestamps reject far-future records and timelines use ASCII", () => {
+  const now = Date.UTC(2026, 9, 15)
+  const block = buildBlock({ ...baseInput, now,
+    users: [{ id: "future", created: now + 120_000 }, { id: "past", created: now - 1000 }],
+    assistants: [{ id: "future", created: now, completed: now + 120_000, mode: "build" }],
+    tools: [{ id: "tool", tool: "bash", end: now - 2000 }],
+  })
+  assert.doesNotMatch(block, /Previous user|Latest assistant/)
+  assert.match(block, /tool "bash" finished/)
+  assert.match(block, /^[\x00-\x7f]*$/)
 })

@@ -1,14 +1,15 @@
 # opencode-time-context
 
 An OpenCode plugin that injects one fresh, compact **time-context block** into the
-model-visible system layer of every primary agent model request, so models stop
+tail of the model-visible messages of every primary agent model request, so models stop
 guessing relative time ("yesterday" for something that happened 5 minutes ago).
 
 Model-agnostic by default: with no configuration it applies to every model
 (Kimi, Claude, GPT, local vLLM models, ...). Optional exact-match include/exclude
 model filtering is available.
 
-Verified against **OpenCode 1.18.35** (`@opencode-ai/plugin` 1.18.27 type surface).
+Supports **OpenCode v1 and v2**. Type-checked against `@opencode-ai/plugin`
+1.18.27 and `@opencode/plugin` 2.0.25; live-tested on OpenCode 1.18.30 and 2.0.25.
 
 ## What the model sees
 
@@ -58,66 +59,68 @@ never written into the stored transcript, so nothing on disk ever goes stale.
 | `Latest assistant completion` | `AssistantMessage.time.completed` | when the last primary-agent reply finished |
 | timeline `user message` | `UserMessage.time.created` | same as above |
 | timeline `assistant message completed` | `AssistantMessage.time.completed` | same as above |
-| timeline `tool "..." finished/failed` | `ToolPart.state.time.end` | when a tool call settled |
+| timeline `tool "..." finished/failed` | v1 `ToolPart.state.time.end`; v2 tool `time.completed` | when a tool call settled |
 
 No message text, tool arguments/outputs, file contents, or conversation bodies are
 ever included - only roles, coarse event kinds, tool names, and times.
 
-Timestamps are gathered from the in-process event stream (`message.updated` /
-`message.part.updated`) and the `chat.message` admission hook; on the first request
-for a session this plugin hasn't seen yet (e.g. after an OpenCode restart), it does
-one bounded read (`session.messages`, `limit: 64`) to seed reliable history from the
-persisted store. Records with missing or implausible times are omitted, never
-fabricated.
+V1 derives timestamps from each request's message payload. V2 strips timestamps
+from model messages, so the adapter reads `ctx.session.context()` once per
+eligible request, inspects its last 64 records, and uses only records whose IDs
+are in the outgoing request. This API returns the whole active context (it has
+no limit parameter), not the full session transcript. No history bodies are
+cached or logged. The lookup has a one-second deadline; if it fails, the block
+still contains fresh current time and omits unknown history times.
 
 ## Install (global)
 
-The user's global config (`~/.config/opencode/opencode.jsonc`) already contains:
+Clone this repository anywhere. No build or runtime dependency installation is
+needed: all SDK imports are type-only.
+
+### OpenCode v2
+
+Use the **checkout directory**, not `src/index.ts`, in
+`~/.config/opencode/opencode.jsonc`:
 
 ```json
-"plugin": [
-  "file:///ABS/PATH/opencode-time-context/src/index.ts"
-]
+"plugin": ["file:///ABS/PATH/opencode-time-context"]
 ```
 
-That single entry enables the plugin for all projects with default options.
-
-To install somewhere else / for a fresh setup: point the `plugin` array at the
-absolute `file://` URL of `src/index.ts` in a checkout of this repo (or copy the
-repo anywhere and use that path). No build step; OpenCode loads TypeScript
-directly.
-
-**Restart required:** OpenCode loads config and plugins at process start. Quit and
-restart OpenCode (or run a new `opencode run`/`opencode` process) after changing
-this file, the plugin source, or options. Running sessions keep the old code.
-
-### Seeing it in the TUI "Plugins" window
-
-The Plugins window lists plugins that have a TUI half registered in `tui.json`
-(the server `plugin` array in `opencode.jsonc` is not read by that window).
-`src/tui.ts` provides a minimal no-op TUI surface for exactly that; the user's
-`~/.config/opencode/tui.json` already contains:
+For the optional no-op TUI presence, add the same directory to the `plugins`
+array in `~/.config/opencode/cli.json`:
 
 ```json
-"plugin": [
-  "@prevalentware/opencode-goal-plugin",
-  "file:///ABS/PATH/opencode-time-context/src/index.ts"
-]
+"plugins": ["file:///ABS/PATH/opencode-time-context"]
 ```
 
-so the plugin appears as `opencode-time-context … active` under External. The
-window's active/inactive toggle controls only that no-op TUI surface - it does
-**not** disable injection. To disable the plugin use `"enabled": false` in the
-server options below, or uninstall.
+V2 resolves the root `server.ts` and `tui.ts` independently. Run
+`opencode reload` after changing configuration; restart the server after source
+changes if the old module remains cached. Restart the TUI to reload its half.
+
+### OpenCode v1
+
+Keep the original entry in `~/.config/opencode/opencode.jsonc`:
+
+```json
+"plugin": ["file:///ABS/PATH/opencode-time-context/src/index.ts"]
+```
+
+The same entry can be added to `plugin` in `~/.config/opencode/tui.json`.
+`src/package.json` dispatches to the original server function and no-op TUI
+adapter. Restart OpenCode after changing source, configuration, or options.
+
+The TUI half only makes the plugin visible in the Plugins window. Its toggle
+does not disable server injection; use the server's `enabled` option below.
 
 ## Configuration
 
 Turn the string entry into a tuple to set options (only in the **one** config file
-where the plugin is declared - see "Double-declaration pitfall" below):
+where the plugin is declared - see "Declare it exactly once" below). This
+example is for v2; for v1 append `/src/index.ts` to the URL:
 
 ```jsonc
 "plugin": [
-  ["file:///…/opencode-time-context/src/index.ts", {
+  ["file:///ABS/PATH/opencode-time-context", {
     "enabled": true,
     "includeModels": [],
     "excludeModels": [],
@@ -136,7 +139,7 @@ where the plugin is declared - see "Double-declaration pitfall" below):
 | `excludeModels` | string[] | `[]` | Blocks matches; **exclusion wins** when both lists match. |
 | `timezone` | string (IANA) | host local timezone | Timezone for the `Now:`/local timestamps. Validated at startup; invalid values fall back to the host timezone with a warning. Note: this is the timezone of the machine running the OpenCode process - if you run OpenCode on a remote host, that's the remote host's timezone. |
 | `historyAnchorsLimit` | integer 0–12 | `6` | Max number of timeline anchors. `0` omits the timeline. |
-| `maxBlockChars` | integer 300–4000 | `1500` | Hard cap on the injected block; oldest anchors are shed first. |
+| `maxBlockChars` | integer 300–4000 | `1500` | Hard cap; oldest anchors are shed first, then headline history. Very small caps use a shorter timing rule. |
 | `debug` | boolean | `false` | Logs each injected block (timestamps only, never prompt contents) to OpenCode's log. |
 
 ### Model matching rules
@@ -152,8 +155,7 @@ compared against per-request model identity:
 The filter is evaluated on **every outgoing model request** (not at startup), so
 mid-session model switches and independent subagents each get the right decision.
 If a request's model identity is unavailable: with empty include/exclude lists
-injection proceeds; with any filters configured it is skipped and a one-line
-diagnostic is logged (never silently claiming an unverified match).
+injection proceeds; with any filters configured it is skipped. V1 logs a diagnostic; v2 logs the skip when `debug` is enabled.
 
 ### Declare it exactly once
 
@@ -165,41 +167,36 @@ also dropped into the auto-scanned `~/.config/opencode/plugin/`) can register
 
 ## Request scope
 
-- Injected: every primary agent model call that flows through
-  `experimental.chat.messages.transform` - the initial call of a turn, each
-  tool-continuation step, and retries; plus subagent sessions (a child session
-  gets its **own** timeline - parent history is never mixed in). All historical
-  values are derived per request from the payload itself, so restarts/resumes
-  and mid-session model switches need no warm-up.
-- Skipped: requests with no user message in the payload, sessions whose
-  in-flight work is only auxiliary agents (compaction/title/summary pending
-  messages via the event stream), and filtered-out models per the lists below.
-- Known leaks, both harmless (~250 tokens in prompts that recompute anyway):
-  title generation runs inline and can carry the block; compaction calls can
-  carry it when their in-flight message event has not landed yet. Neither
-  touches stored transcripts.
+Both adapters append one ephemeral user message to each eligible primary agent
+request, including tool continuations and subagent turns. Subagents use only
+their own session history. Existing history and system messages stay unchanged;
+the plugin never writes to the stored transcript or edits admitted user text.
+Reprocessing a payload replaces the previous plugin-owned row.
 
-The block is ephemeral: exactly one plugin-owned row per request, replaced if
-the same payload is re-transformed, never persisted, and never injected into
-the canonical user message text.
+V2 registers only `ctx.session.hook("context")`; title, compaction, and generate
+requests have separate hooks and receive no injection. V1 uses
+`experimental.chat.messages.transform` plus an event mirror to suppress pending
+auxiliary agents. Its legacy title/compaction paths may occasionally carry a
+block when auxiliary events arrive late. Requests without user messages and
+filtered-out models are skipped in both versions.
 
 ## Diagnostics and failure behavior
 
-Logs go to OpenCode's own log (`client.app.log`, service `time-context`):
-startup line with the effective config, one-time-per-change filter skip reasons,
-injection payloads when `debug: true`, and warnings on failures. Prompt or
-conversation content is never logged.
+With `debug: true`, both adapters log injected time blocks and filter decisions.
+V1 uses `client.app.log`; v2 uses the plugin host's console logging. V2's filter
+diagnostics are per request. No conversation bodies or upstream error objects
+are logged by the v2 adapter.
 
-Everything fails open: storage/API errors, bad options, invalid timestamps, or
-unexpected shapes disable only the affected feature of the block (or skip
-injection for that request) - OpenCode keeps working normally.
+Hooks fail open: unavailable history produces current-time-only context;
+unexpected errors skip injection without breaking the request. Missing,
+invalid, or implausibly future history timestamps are omitted.
 
 ## Disable / uninstall
 
 - Temporarily: set `"enabled": false` in the tuple options (restart OpenCode).
 - Fully: delete the plugin entry from the `plugin` array in
-  `~/.config/opencode/opencode.jsonc` (restart OpenCode). This repo can remain on
-  disk; nothing else references it.
+  `~/.config/opencode/opencode.jsonc` (restart OpenCode). Also remove the optional TUI entry from `cli.json` (v2) or `tui.json` (v1).
+  The checkout can remain on disk.
 
 ## Verify it works
 

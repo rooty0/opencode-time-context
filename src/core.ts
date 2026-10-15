@@ -386,7 +386,7 @@ export function buildBlock(input: BlockInput): string {
     return localDateKey(time, timezone) === dateKey ? t.slice(t.indexOf(" ") + 1) : t
   }
 
-  const saneUsers = input.users.filter((u) => isSaneTimestamp(u.created)).sort((a, b) => b.created - a.created)
+  const saneUsers = input.users.filter((u) => isSaneTimestamp(u.created) && u.created <= now + 60_000).sort((a, b) => b.created - a.created)
   const latest = saneUsers[0]
   const previous = saneUsers[1]
 
@@ -395,7 +395,7 @@ export function buildBlock(input: BlockInput): string {
   let latestAssistant: number | undefined
   for (const a of input.assistants) {
     if (AUX_AGENT_MODES.has(a.mode) || a.summary) continue
-    if (!isSaneTimestamp(a.completed)) continue
+    if (!isSaneTimestamp(a.completed) || a.completed > now + 60_000) continue
     latestAssistant = latestAssistant === undefined ? a.completed : Math.max(latestAssistant, a.completed)
   }
 
@@ -429,7 +429,7 @@ export function buildBlock(input: BlockInput): string {
   const withAnchors = (list: Anchor[]) =>
     list.length === 0
       ? []
-      : [timelineHeader, ...list.map((a) => `- ${anchorAt(a.time)} — ${a.label}`)]
+      : [timelineHeader, ...list.map((a) => `- ${anchorAt(a.time)} - ${a.label}`)]
 
   const assemble = (anchorLines: string[], optionalLines: string[]) =>
     [...lines, ...optionalLines, ...anchorLines, TIMING_RULE, BLOCK_END].join("\n")
@@ -444,6 +444,9 @@ export function buildBlock(input: BlockInput): string {
   }
   if (block.length > input.maxBlockChars) {
     block = assemble([], [])
+  }
+  if (block.length > input.maxBlockChars) {
+    block = [...lines, 'Timing rule: use recorded times; if unknown, say "earlier". Message times do not date external events.', BLOCK_END].join("\n")
   }
   return block
 }
