@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
 import type { SessionContext } from "@opencode/plugin/promise/session"
+import packageServer from "opencode-time-context"
 import { createV2ContextHook, type V2Deps } from "../src/plugin.v2.ts"
 import server from "../server.ts"
 import tui from "../tui.ts"
@@ -95,6 +96,8 @@ test("v2: context lookup is session-local and only last 64 matching records supp
 
 test("entrypoints: v1 function retained; v2 registers only context and disposes hook", async () => {
   assert.equal(typeof v1, "function")
+  assert.equal(packageServer, server)
+  assert.equal(packageServer.id, "opencode-time-context")
   assert.equal(typeof tui.setup, "function")
   let disposed = false
   const cleanup = await server.setup({ options: {}, session: {

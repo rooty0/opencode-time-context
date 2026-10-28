@@ -12,7 +12,7 @@ src/core.ts    Pure logic: config parsing, timezones/offsets, durations,
                unit-tested, no opencode imports.
 src/hooks.ts   Event mirror + the messages.transform injection. Imports core.
 src/plugin.v2.ts V2 context hook + read-only timestamp lookup.
-server.ts      V2 directory entry; tui.ts is its no-op TUI half.
+server.ts      V2 package entry; tui.ts is its no-op TUI half.
 src/index.ts   V1 plugin entry. MUST export only the default plugin function.
 test/          node:test suites driving core directly and hooks via stubs.
 ```
@@ -223,12 +223,14 @@ records the judgment calls and their rejected alternatives.
    We document the pitfall instead of building config-snapshot merging to
    defend against it.
 
-## V2 runtime contract (OpenCode / @opencode/plugin 2.0.25)
+## V2 runtime contract (OpenCode / @opencode/plugin 2.2.0)
 
 - Root `server.ts` default-exports `{id, setup}`. `setup` awaits registration
   and returns a cleanup that disposes it. Root `tui.ts` is a no-op V2 definition.
-  V2 local directory loading resolves these files. Keep `src/index.ts` and
-  `src/package.json` unchanged for the separate legacy V1 entry.
+  The root package export map must point `.`/`./server` to `server.ts` and
+  `./tui` to `tui.ts`: V2 follows package exports before filename conventions.
+  Keep `src/index.ts` and `src/package.json` unchanged for the separate legacy
+  V1 entry.
 - `src/plugin.v2.ts` registers only `ctx.session.hook("context")`, per primary
   model request, including tool continuations and subagents. Auxiliary title,
   compaction, and generate requests have separate hooks; do not register them.

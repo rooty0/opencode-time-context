@@ -9,7 +9,7 @@ Model-agnostic by default: with no configuration it applies to every model
 model filtering is available.
 
 Supports **OpenCode v1 and v2**. Type-checked against `@opencode-ai/plugin`
-1.18.27 and `@opencode/plugin` 2.0.25; live-tested on OpenCode 1.18.30 and 2.0.25.
+1.18.27 and `@opencode/plugin` 2.2.0; live-tested on OpenCode 1.18.30 and 2.2.0.
 
 ## What the model sees
 
@@ -83,7 +83,7 @@ Use the **checkout directory**, not `src/index.ts`, in
 `~/.config/opencode/opencode.jsonc`:
 
 ```json
-"plugin": ["file:///ABS/PATH/opencode-time-context"]
+"plugins": ["file:///ABS/PATH/opencode-time-context"]
 ```
 
 For the optional no-op TUI presence, add the same directory to the `plugins`
@@ -93,9 +93,10 @@ array in `~/.config/opencode/cli.json`:
 "plugins": ["file:///ABS/PATH/opencode-time-context"]
 ```
 
-V2 resolves the root `server.ts` and `tui.ts` independently. Run
-`opencode reload` after changing configuration; restart the server after source
-changes if the old module remains cached. Restart the TUI to reload its half.
+V2 resolves `server.ts` and `tui.ts` through the checkout's package exports.
+Configuration changes reload automatically; use `/reload` to force a full
+reload. Restart the service after source or package-export changes if the old
+module remains cached.
 
 ### OpenCode v1
 
@@ -114,21 +115,24 @@ does not disable server injection; use the server's `enabled` option below.
 
 ## Configuration
 
-Turn the string entry into a tuple to set options (only in the **one** config file
-where the plugin is declared - see "Declare it exactly once" below). This
-example is for v2; for v1 append `/src/index.ts` to the URL:
+Turn the string entry into an object to set options (only in the **one** config
+file where the plugin is declared - see "Declare it exactly once" below). This
+example is for v2; v1 continues to use its tuple form with `/src/index.ts`:
 
 ```jsonc
-"plugin": [
-  ["file:///ABS/PATH/opencode-time-context", {
-    "enabled": true,
-    "includeModels": [],
-    "excludeModels": [],
-    "timezone": "America/Los_Angeles",
-    "historyAnchorsLimit": 6,
-    "maxBlockChars": 1500,
-    "debug": false
-  }]
+"plugins": [
+  {
+    "package": "file:///ABS/PATH/opencode-time-context",
+    "options": {
+      "enabled": true,
+      "includeModels": [],
+      "excludeModels": [],
+      "timezone": "America/Los_Angeles",
+      "historyAnchorsLimit": 6,
+      "maxBlockChars": 1500,
+      "debug": false
+    }
+  }
 ]
 ```
 
@@ -193,9 +197,10 @@ invalid, or implausibly future history timestamps are omitted.
 
 ## Disable / uninstall
 
-- Temporarily: set `"enabled": false` in the tuple options (restart OpenCode).
+- Temporarily: set `"enabled": false` in the plugin options.
 - Fully: delete the plugin entry from the `plugin` array in
-  `~/.config/opencode/opencode.jsonc` (restart OpenCode). Also remove the optional TUI entry from `cli.json` (v2) or `tui.json` (v1).
+  `~/.config/opencode/opencode.jsonc`. Also remove the optional TUI entry from
+  `cli.json` (v2) or `tui.json` (v1).
   The checkout can remain on disk.
 
 ## Verify it works
