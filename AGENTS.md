@@ -256,6 +256,11 @@ records the judgment calls and their rejected alternatives.
   because a long turn stores one assistant record per model step, which pushes
   the turn's own user record past any fixed tail window
   (`test/v2.test.ts` pins the split).
+- Context record types are user/assistant/idle/compaction (compaction rows are
+  their own type, verified live 2026-11-16), so the adapter's type checks skip
+  them without aux-mode filtering. The v1 aux-mode set stays in core for the v1
+  payload path; the v2 adapter passes an empty `auxAgentModes` set, so a custom
+  agent that merely shares an aux name (e.g. "summary") stays visible.
 - Context lookup races a one-second deadline; the abort signal passed beside it
   is dropped by the promise-API adapter (it accepts only the input object), so
   the deadline - not the signal - bounds the lookup, and the race timer is
@@ -292,9 +297,10 @@ records the judgment calls and their rejected alternatives.
   prefix and re-writes the whole conversation; without it, steps read the full
   ~15.3K prompt and write only ~0.1K per-step deltas. The per-step penalty
   scales with conversation size (written at 1.25x instead of read at 0.1x), so
-  long Claude sessions pay most. Stopgap is `excludeModels`; the durable fix
-  is upstream (tail selection should skip the ephemeral trailing message, as
-  it already skips effort-update messages).
+  long Claude sessions pay most. Adopted mitigation: `includeModels` allowlists
+  the implicit-cache models so explicit-breakpoint models get no block at all;
+  the durable fix is upstream (tail selection should skip the ephemeral
+  trailing message, as it already skips effort-update messages).
 - Step-limited agents (`steps` set): the block lands after core's
   `MAX_STEPS_PROMPT` assistant message, so the model's last input is the time
   block rather than the forced-summary instruction.

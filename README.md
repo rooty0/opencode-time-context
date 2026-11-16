@@ -52,8 +52,10 @@ caches are the exception: OpenCode's cache policy marks the final message - this
 block - as the conversation breakpoint on Anthropic Messages routes, so history
 there is cache-written instead of cache-read while the block changes per request
 (confirmed by measurement on claude-sonnet, 2026-11-16: each step re-wrote the
-whole conversation instead of reading it). `excludeModels` can scope the plugin
-away from such models; the penalty scales with conversation size, so long
+whole conversation instead of reading it). The cleanest scope on a mixed fleet
+is an `includeModels` allowlist of the implicit-cache models (the adopted
+configuration here); `excludeModels` can carve out models the other way. The
+penalty scales with conversation size, so long
 Claude sessions are where it matters. The synthetic message is
 request-only: it is never written into the stored transcript, so nothing on
 disk ever goes stale.

@@ -107,6 +107,104 @@ test("v2: session-local lookup; user anchors rescue from beyond the 64-record ti
   assert.doesNotMatch(block(b), /Latest assistant|Recent timeline/)
 })
 
+test("v2: a custom agent named like a v1 aux mode stays visible", async () => {
+  const summaryRecords: Records = [
+    { id: "u1", type: "user", time: { created: NOW - 10_000 }, text: SECRET },
+    { id: "a1", type: "assistant", agent: "summary", model: { providerID: "local", id: "model" },
+      time: { created: NOW - 9000, completed: NOW - 1000 }, content: [] },
+  ]
+  const e = event()
+  await hook({ context: async () => summaryRecords })(e)
+  assert.match(block(e), /Latest assistant completion: .*1 sec ago/)
+})
+
+test("v2: compaction and idle records never supply users or anchors", async () => {
+  const mixed = [
+    { id: "u1", type: "user", time: { created: NOW - 10_000 }, text: SECRET },
+    { id: "m-comp", type: "compaction", agent: "", time: { created: NOW - 5000 } },
+    { id: "m-idle", type: "idle", agent: "", time: { created: NOW - 4000 } },
+  ] as unknown as Records
+  const e = event()
+  e.messages = [
+    { id: "u1", role: "user", content: [{ type: "text", text: SECRET }] },
+    { id: "m-comp", role: "user", content: [{ type: "text", text: SECRET }] },
+    { id: "m-idle", role: "user", content: [{ type: "text", text: SECRET }] },
+  ] as SessionContext["messages"]
+  await hook({ context: async () => mixed })(e)
+  assert.match(block(e), /Latest user message: .*10 sec ago/)
+  assert.doesNotMatch(block(e), /Latest assistant|Recent timeline|Previous user/)
+})
+
+test("v2: running tool parts are excluded and errored tools render as failed", async () => {
+  const toolRecords: Records = [
+    { id: "u1", type: "user", time: { created: NOW - 10_000 }, text: SECRET },
+    { id: "a1", type: "assistant", agent: "build", model: { providerID: "local", id: "model" },
+      time: { created: NOW - 9000, completed: NOW - 1000 }, content: [
+        { type: "tool", id: "t-run", name: "bash", time: { created: NOW - 8000, completed: NOW - 5000 },
+          state: { status: "running", input: {}, metadata: {} } },
+        { type: "tool", id: "t-err", name: "read", time: { created: NOW - 8000, completed: NOW - 2000 },
+          state: { status: "error", input: {}, error: { type: "Error", message: SECRET }, content: [{ type: "text", text: SECRET }] } },
+      ] },
+  ]
+  const e = event()
+  await hook({ context: async () => toolRecords })(e)
+  assert.match(block(e), /tool "read" failed/)
+  assert.doesNotMatch(block(e), /tool "bash" (finished|failed)/)
+})
+
+test("v2: unknown model identity skips only when filters are configured", async () => {
+  const noModel = () => {
+    const e = event()
+    ;(e as unknown as { model?: unknown }).model = undefined
+    return e
+  }
+  let reads = 0
+  const read = async () => { reads++; return records }
+  const skipped = noModel()
+  await hook({ context: read, options: { includeModels: ["local/model"] } })(skipped)
+  assert.equal(skipped.messages.length, 2)
+  assert.equal(reads, 0)
+  const injected = noModel()
+  await hook({ context: read })(injected)
+  assert.equal(injected.messages.length, 3)
+})
+
+test("v2: a frozen request message array fails open without throwing", async () => {
+  const e = event()
+  Object.freeze(e.messages)
+  await hook()(e)
+  assert.equal(e.messages.length, 2)
+})
+
+test("v2: a synchronously throwing lookup degrades to fresh current time", async () => {
+  const e = event()
+  await hook({ context: () => { throw new Error(SECRET) } })(e)
+  assert.match(block(e), /UTC now:/)
+  assert.doesNotMatch(block(e), /Latest user|Latest assistant|SECRET/)
+})
+
+test("v2: lookups settling after the deadline stay fail-open with no unhandled rejection", async () => {
+  const unhandled: unknown[] = []
+  const onUnhandled = (reason: unknown) => unhandled.push(reason)
+  process.on("unhandledRejection", onUnhandled)
+  try {
+    const settling = [
+      () => new Promise<Records>((resolve) => { setTimeout(() => resolve(records), 40) }),
+      () => new Promise<Records>((_, reject) => { setTimeout(() => reject(new Error("late")), 40) }),
+    ]
+    for (const context of settling) {
+      const e = event()
+      await hook({ context, lookupTimeoutMs: 5 })(e)
+      assert.match(block(e), /UTC now:/)
+      assert.doesNotMatch(block(e), /Latest user|Latest assistant/)
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  } finally {
+    process.off("unhandledRejection", onUnhandled)
+  }
+  assert.equal(unhandled.length, 0)
+})
+
 test("entrypoints: v1 function retained; v2 registers only context and disposes hook", async () => {
   assert.equal(typeof v1, "function")
   assert.equal(packageServer, server)

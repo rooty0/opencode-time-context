@@ -316,8 +316,8 @@ export interface Anchor {
 
 /**
  * Picks a bounded, ordered timeline of recent reliable message/event anchors.
- * - Assistant anchors use completion time; aux agents (compaction/title/summary)
- *   and compaction summaries are excluded.
+ * - Assistant anchors use completion time; modes in `auxModes` and compaction
+ *   summaries are excluded.
  * - Tool anchors use the recorded end time only when the tool settled.
  * - Records with invalid or implausible (far-future) times are excluded.
  * Returned ascending by time so the block reads chronologically.
@@ -329,6 +329,7 @@ export function selectAnchors(
   limit: number,
   now: number,
   omit?: ReadonlyArray<Anchor>,
+  auxModes: ReadonlySet<string> = AUX_AGENT_MODES,
 ): Anchor[] {
   if (limit <= 0) return []
   const omitted = new Set((omit ?? []).map((a) => `${a.time}|${a.label}`))
@@ -338,7 +339,7 @@ export function selectAnchors(
     candidates.push({ time: u.created, label: "user message" })
   }
   for (const a of assistants) {
-    if (AUX_AGENT_MODES.has(a.mode) || a.summary) continue
+    if (auxModes.has(a.mode) || a.summary) continue
     if (!isSaneTimestamp(a.completed) || a.completed > now + FUTURE_TOLERANCE_MS) continue
     candidates.push({ time: a.completed, label: "assistant message completed" })
   }
@@ -369,6 +370,13 @@ export interface BlockInput {
   tools: ToolMark[]
   historyAnchorsLimit: number
   maxBlockChars: number
+  /**
+   * Assistant modes hidden as auxiliary. Defaults to the v1 aux set because v1
+   * payloads carry compaction/title/summary assistant rows; v2 stores compaction
+   * as its own record type, so its adapter passes an empty set and an agent that
+   * merely shares an aux name stays visible.
+   */
+  auxAgentModes?: ReadonlySet<string>
 }
 
 /**
@@ -390,11 +398,13 @@ export function buildBlock(input: BlockInput): string {
   const latest = saneUsers[0]
   const previous = saneUsers[1]
 
+  const auxModes = input.auxAgentModes ?? AUX_AGENT_MODES
+
   // Latest completed assistant message: when the previous model-visible turn
   // finished, per the assistant message's completed time.
   let latestAssistant: number | undefined
   for (const a of input.assistants) {
-    if (AUX_AGENT_MODES.has(a.mode) || a.summary) continue
+    if (auxModes.has(a.mode) || a.summary) continue
     if (!isSaneTimestamp(a.completed) || a.completed > now + 60_000) continue
     latestAssistant = latestAssistant === undefined ? a.completed : Math.max(latestAssistant, a.completed)
   }
@@ -424,7 +434,7 @@ export function buildBlock(input: BlockInput): string {
   const omit: Anchor[] = []
   if (latest) omit.push({ time: latest.created, label: "user message" })
   if (latestAssistant !== undefined) omit.push({ time: latestAssistant, label: "assistant message completed" })
-  let anchors = selectAnchors(input.users, input.assistants, input.tools, input.historyAnchorsLimit, now, omit)
+  let anchors = selectAnchors(input.users, input.assistants, input.tools, input.historyAnchorsLimit, now, omit, auxModes)
   const timelineHeader = "Recent timeline (recorded message/event times):"
   const withAnchors = (list: Anchor[]) =>
     list.length === 0

@@ -318,6 +318,14 @@ describe("timeline anchors", () => {
     )
   })
 
+  test("an empty auxModes set keeps aux-named assistants visible (v2 path)", () => {
+    const assistants: AssistantMark[] = [
+      { id: "a1", created: now - 10_000, completed: now - 9_000, mode: "compaction" },
+    ]
+    const anchors = selectAnchors([], assistants, [], 6, now, undefined, new Set())
+    assert.deepEqual(anchors.map((a) => a.label), ["assistant message completed"])
+  })
+
   test("limit 0 disables the timeline", () => {
     const anchors = selectAnchors([{ id: "u1", created: now - 1_000 }], [], [], 0, now)
     assert.deepEqual(anchors, [])
