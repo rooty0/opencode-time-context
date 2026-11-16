@@ -3,9 +3,6 @@ import type { SessionContext } from "@opencode/plugin/promise/session"
 import { buildBlock, isModelEligible, parseOptions, type UserMark, type AssistantMark, type ToolMark } from "./core.ts"
 
 const EPHEMERAL_ID = "msg_time_context_ephemeral"
-// V2 stores compaction as its own record type, never as assistant modes, so no
-// assistant mode is auxiliary there; an empty set keeps every agent visible.
-const NO_AUX_AGENTS: ReadonlySet<string> = new Set()
 // Bounds assistant/tool (timeline) processing only; user anchors are exempt and
 // scan the whole returned context (id + created, never bodies).
 const MAX_RECORDS = 64
@@ -70,7 +67,7 @@ export function createV2ContextHook(deps: V2Deps) {
             if (record.type === "user") {
               users.push({ id: record.id, created: record.time.created })
             } else if (record.type === "assistant" && index >= cutoff) {
-              assistants.push({ id: record.id, created: record.time.created, completed: record.time.completed, mode: record.agent })
+              assistants.push({ id: record.id, created: record.time.created, completed: record.time.completed })
               for (const part of record.content) {
                 if (part.type !== "tool" || !["completed", "error"].includes(part.state.status)) continue
                 tools.push({ id: part.id, tool: part.name, end: part.time.completed, failed: part.state.status === "error" })
@@ -89,7 +86,6 @@ export function createV2ContextHook(deps: V2Deps) {
       const block = buildBlock({
         now: (deps.now ?? Date.now)(), timezone, users, assistants, tools,
         historyAnchorsLimit: config.historyAnchorsLimit, maxBlockChars: config.maxBlockChars,
-        auxAgentModes: NO_AUX_AGENTS,
       })
       messages.push({ id: EPHEMERAL_ID, role: "user", content: [{ type: "text", text: block }] })
       if (config.debug) log(`injected time-context block\n${block}`)

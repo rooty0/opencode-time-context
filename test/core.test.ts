@@ -255,8 +255,8 @@ describe("timeline anchors", () => {
       { id: "u3", created: now - 15_000 },
     ]
     const assistants: AssistantMark[] = [
-      { id: "a1", created: now - 500_000, completed: now - 480_000, mode: "build" },
-      { id: "a2", created: now - 200_000, completed: now - 120_000, mode: "build" },
+      { id: "a1", created: now - 500_000, completed: now - 480_000 },
+      { id: "a2", created: now - 200_000, completed: now - 120_000 },
     ]
     const tools: ToolMark[] = [{ id: "t1", tool: "bash", end: now - 60_000 }]
     const anchors = selectAnchors(users, assistants, tools, 4, now)
@@ -284,7 +284,7 @@ describe("timeline anchors", () => {
         { id: "u1", created: now - 300_000 },
         { id: "u2", created: now - 15_000 },
       ],
-      assistants: [{ id: "a1", created: now - 200_000, completed: now - 62_000, mode: "build" }],
+      assistants: [{ id: "a1", created: now - 200_000, completed: now - 62_000 }],
     })
     const timeline = block.split("Recent timeline (recorded message/event times):")[1] ?? ""
     const timelineBody = timeline.split("Timing rule:")[0] ?? ""
@@ -300,10 +300,8 @@ describe("timeline anchors", () => {
       { id: "u2", created: -5 },
     ]
     const assistants: AssistantMark[] = [
-      { id: "a1", created: now - 10_000, mode: "build" }, // never completed: unknown completion
-      { id: "a2", created: now - 10_000, completed: now - 9_000, mode: "compaction" }, // hidden aux
-      { id: "a3", created: now - 10_000, completed: now - 8_000, mode: "build", summary: true }, // compaction summary
-      { id: "a4", created: now - 10_000, completed: now + 10 * 60_000, mode: "build" }, // far-future: unreliable
+      { id: "a1", created: now - 10_000 }, // never completed: unknown completion
+      { id: "a4", created: now - 10_000, completed: now + 10 * 60_000 }, // far-future: unreliable
     ]
     const tools: ToolMark[] = [
       { id: "t1", tool: "bash" }, // never finished
@@ -316,14 +314,6 @@ describe("timeline anchors", () => {
       anchors.map((a) => a.label),
       ['tool "bash" finished', 'tool "read" failed'],
     )
-  })
-
-  test("an empty auxModes set keeps aux-named assistants visible (v2 path)", () => {
-    const assistants: AssistantMark[] = [
-      { id: "a1", created: now - 10_000, completed: now - 9_000, mode: "compaction" },
-    ]
-    const anchors = selectAnchors([], assistants, [], 6, now, undefined, new Set())
-    assert.deepEqual(anchors.map((a) => a.label), ["assistant message completed"])
   })
 
   test("limit 0 disables the timeline", () => {
@@ -357,7 +347,7 @@ describe("block assembly", () => {
         { id: "u2", created: now - 15_000 },
       ],
       // assistant/tool activity between the two user messages must not distort the gap
-      assistants: [{ id: "a1", created: now - 300_000, completed: now - 240_000, mode: "build" }],
+      assistants: [{ id: "a1", created: now - 300_000, completed: now - 240_000 }],
       tools: [{ id: "t1", tool: "bash", end: now - 100_000 }],
     })
     assert.match(block, /Latest user message: 2026-10-07 20:30:45 -07:00 \(15 sec ago\)/)
@@ -369,7 +359,7 @@ describe("block assembly", () => {
       ...baseInput,
       now,
       users: [{ id: "u1", created: now - 15_000 }],
-      assistants: [{ id: "a1", created: now - 90_000, completed: now - 62_000, mode: "build" }],
+      assistants: [{ id: "a1", created: now - 90_000, completed: now - 62_000 }],
     })
     assert.match(block, /Latest assistant completion: 2026-10-07 20:29:58 -07:00 \(1 min 2 sec ago\)/)
   })
@@ -417,7 +407,7 @@ test("headline timestamps reject far-future records and timelines use ASCII", ()
   const now = Date.UTC(2026, 9, 15)
   const block = buildBlock({ ...baseInput, now,
     users: [{ id: "future", created: now + 120_000 }, { id: "past", created: now - 1000 }],
-    assistants: [{ id: "future", created: now, completed: now + 120_000, mode: "build" }],
+    assistants: [{ id: "future", created: now, completed: now + 120_000 }],
     tools: [{ id: "tool", tool: "bash", end: now - 2000 }],
   })
   assert.doesNotMatch(block, /Previous user|Latest assistant/)

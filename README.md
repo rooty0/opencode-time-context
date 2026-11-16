@@ -8,8 +8,9 @@ Model-agnostic by default: with no configuration it applies to every model
 (Kimi, Claude, GPT, local vLLM models, ...). Optional exact-match include/exclude
 model filtering is available.
 
-Supports **OpenCode v1 and v2**. Type-checked against `@opencode-ai/plugin`
-1.18.27 and `@opencode/plugin` 2.3.0; live-tested on OpenCode 1.18.30 and 2.3.0.
+Requires **OpenCode v2**. Type-checked against `@opencode/plugin` 2.3.0;
+live-tested on OpenCode 2.3.0. (v1 support existed through v0.1.x; see git
+history.)
 
 ## What the model sees
 
@@ -69,30 +70,27 @@ disk ever goes stale.
 | `Latest assistant completion` | `AssistantMessage.time.completed` | when the last model step (assistant record) finished |
 | timeline `user message` | `UserMessage.time.created` | same as above |
 | timeline `assistant message completed` | `AssistantMessage.time.completed` | same as above |
-| timeline `tool "..." finished/failed` | v1 `ToolPart.state.time.end`; v2 tool `time.completed` | when a tool call settled |
+| timeline `tool "..." finished/failed` | tool `time.completed` | when a tool call settled |
 
 No message text, tool arguments/outputs, file contents, or conversation bodies are
 ever included - only roles, coarse event kinds, tool names, and times.
 
-V1 derives timestamps from each request's message payload. V2 strips timestamps
-from model messages, so the adapter reads `ctx.session.context()` once per
-eligible request and uses only records whose IDs are in the outgoing request:
-the last 64 records supply the assistant/tool timeline, while user anchors scan
-the whole returned context (id + created only), so long turns keep an accurate
-`Latest user message`. This API returns the whole active context (it has
-no limit parameter), not the full session transcript. No history bodies are
-cached or logged. The lookup has a one-second deadline; if it fails, the block
-still contains fresh current time and omits unknown history times.
+OpenCode strips timestamps from model-visible messages, so the adapter reads
+`ctx.session.context()` once per eligible request and uses only records whose
+IDs are in the outgoing request: the last 64 records supply the assistant/tool
+timeline, while user anchors scan the whole returned context (id + created
+only), so long turns keep an accurate `Latest user message`. This API returns
+the whole active context (it has no limit parameter), not the full session
+transcript. No history bodies are cached or logged. The lookup has a
+one-second deadline; if it fails, the block still contains fresh current time
+and omits unknown history times.
 
 ## Install (global)
 
 Clone this repository anywhere. No build or runtime dependency installation is
 needed: all SDK imports are type-only.
 
-### OpenCode v2
-
-Use the **checkout directory**, not `src/index.ts`, in
-`~/.config/opencode/opencode.jsonc`:
+Use the **checkout directory** in `~/.config/opencode/opencode.jsonc`:
 
 ```json
 "plugins": ["file:///ABS/PATH/opencode-time-context"]
@@ -105,22 +103,10 @@ array in `~/.config/opencode/cli.json`:
 "plugins": ["file:///ABS/PATH/opencode-time-context"]
 ```
 
-V2 resolves `server.ts` and `tui.ts` through the checkout's package exports.
-Configuration changes reload automatically, and OpenCode 2.3.0 also hot-reloads
-plugin source (the server watches the plugin's import graph). Use `/reload`
-after `package.json` or export-map changes.
-
-### OpenCode v1
-
-Keep the original entry in `~/.config/opencode/opencode.jsonc`:
-
-```json
-"plugin": ["file:///ABS/PATH/opencode-time-context/src/index.ts"]
-```
-
-The same entry can be added to `plugin` in `~/.config/opencode/tui.json`.
-`src/package.json` dispatches to the original server function and no-op TUI
-adapter. Restart OpenCode after changing source, configuration, or options.
+OpenCode resolves `server.ts` and `tui.ts` through the checkout's package
+exports. Configuration changes reload automatically, and OpenCode 2.3.0 also
+hot-reloads plugin source (the server watches the plugin's import graph). Use
+`/reload` after `package.json` or export-map changes.
 
 The TUI half only makes the plugin visible in the Plugins window. Its toggle
 does not disable server injection; use the server's `enabled` option below.
@@ -128,8 +114,7 @@ does not disable server injection; use the server's `enabled` option below.
 ## Configuration
 
 Turn the string entry into an object to set options (only in the **one** config
-file where the plugin is declared - see "Declare it exactly once" below). This
-example is for v2; v1 continues to use its tuple form with `/src/index.ts`:
+file where the plugin is declared - see "Declare it exactly once" below):
 
 ```jsonc
 "plugins": [
@@ -171,38 +156,32 @@ compared against per-request model identity:
 The filter is evaluated on **every outgoing model request** (not at startup), so
 mid-session model switches and independent subagents each get the right decision.
 If a request's model identity is unavailable: with empty include/exclude lists
-injection proceeds; with any filters configured it is skipped. V1 logs a diagnostic; v2 logs the skip when `debug` is enabled.
+injection proceeds; with any filters configured it is skipped. The skip is
+logged when `debug` is enabled.
 
 ### Declare it exactly once
 
-Declare the plugin in exactly one config file. In OpenCode 1.18.35 the same file
-declared in two places (e.g. global config *and* a project `opencode.json`, or
-also dropped into the auto-scanned `~/.config/opencode/plugin/`) can register
-**twice** with competing options. OpenCode 2.3.0 instead rejects duplicate plugin
-IDs at load; either way, stick to the single global entry above.
-(Technical background lives in AGENTS.md.)
+Declare the plugin in exactly one config file. OpenCode 2.3.0 rejects duplicate
+plugin IDs at load; a single global entry with one options object is the right
+shape regardless. (Technical background lives in AGENTS.md.)
 
 ## Request scope
 
-Both adapters append one ephemeral user message to each eligible primary agent
+The adapter appends one ephemeral user message to each eligible primary agent
 request, including tool continuations and subagent turns. Subagents use only
 their own session history. Existing history and system messages stay unchanged;
 the plugin never writes to the stored transcript or edits admitted user text.
 Reprocessing a payload replaces the previous plugin-owned row.
 
-V2 registers only `ctx.session.hook("context")`; title, compaction, and generate
-requests have separate hooks and receive no injection. V1 uses
-`experimental.chat.messages.transform` plus an event mirror to suppress pending
-auxiliary agents. Its legacy title/compaction paths may occasionally carry a
-block when auxiliary events arrive late. Requests without user messages and
-filtered-out models are skipped in both versions.
+Only `ctx.session.hook("context")` is registered; title, compaction, and
+generate requests have separate hooks and receive no injection. Requests
+without user messages and filtered-out models are skipped.
 
 ## Diagnostics and failure behavior
 
-With `debug: true`, both adapters log injected time blocks and filter decisions.
-V1 uses `client.app.log`; v2 uses the plugin host's console logging. V2's filter
-diagnostics are per request. No conversation bodies or upstream error objects
-are logged by the v2 adapter.
+With `debug: true`, injected time blocks and filter decisions are logged per
+request to the plugin host's console (the OpenCode server process's stderr).
+No conversation bodies or upstream error objects are logged.
 
 Hooks fail open: unavailable history produces current-time-only context;
 unexpected errors skip injection without breaking the request. Missing,
@@ -211,10 +190,9 @@ invalid, or implausibly future history timestamps are omitted.
 ## Disable / uninstall
 
 - Temporarily: set `"enabled": false` in the plugin options.
-- Fully: delete the plugin entry from the `plugins` array (v2) or the `plugin`
-  array (v1) in `~/.config/opencode/opencode.jsonc`. Also remove the optional
-  TUI entry from `cli.json` (v2) or `tui.json` (v1).
-  The checkout can remain on disk.
+- Fully: delete the plugin entry from the `plugins` array in
+  `~/.config/opencode/opencode.jsonc`. Also remove the optional TUI entry from
+  `cli.json`. The checkout can remain on disk.
 
 ## Verify it works
 

@@ -5,7 +5,6 @@ import packageServer from "opencode-time-context"
 import { createV2ContextHook, type V2Deps } from "../src/plugin.v2.ts"
 import server from "../server.ts"
 import tui from "../tui.ts"
-import v1 from "../src/index.ts"
 
 const NOW = Date.UTC(2026, 9, 15, 12)
 const SECRET = "SECRET-PROMPT-CONTENTS"
@@ -107,7 +106,7 @@ test("v2: session-local lookup; user anchors rescue from beyond the 64-record ti
   assert.doesNotMatch(block(b), /Latest assistant|Recent timeline/)
 })
 
-test("v2: a custom agent named like a v1 aux mode stays visible", async () => {
+test("v2: agent names never get filtered (an agent named summary stays visible)", async () => {
   const summaryRecords: Records = [
     { id: "u1", type: "user", time: { created: NOW - 10_000 }, text: SECRET },
     { id: "a1", type: "assistant", agent: "summary", model: { providerID: "local", id: "model" },
@@ -205,8 +204,7 @@ test("v2: lookups settling after the deadline stay fail-open with no unhandled r
   assert.equal(unhandled.length, 0)
 })
 
-test("entrypoints: v1 function retained; v2 registers only context and disposes hook", async () => {
-  assert.equal(typeof v1, "function")
+test("entrypoints: registers only context and disposes hook", async () => {
   assert.equal(packageServer, server)
   assert.equal(packageServer.id, "opencode-time-context")
   assert.equal(typeof tui.setup, "function")
