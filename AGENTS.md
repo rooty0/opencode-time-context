@@ -224,9 +224,12 @@ the judgment calls and their rejected alternatives.
   deltas. The per-step penalty scales with conversation size (written at 1.25x
   instead of read at 0.1x), so long Claude sessions pay most. Adopted
   mitigation: `includeModels` allowlists the implicit-cache models so
-  explicit-breakpoint models get no block at all; the durable fix is upstream
-  (tail selection should skip the ephemeral trailing message, as it already
-  skips effort-update messages; reported as anomalyco/opencode#64311).
+  explicit-breakpoint models get no block at all; the durable fix is upstream:
+  anomalyco/opencode#62554, with the fix in flight as PR #63498 - a
+  `transient` flag on text parts that makes cache policy place breakpoints
+  before request-local content (our report #64311 closed as its duplicate).
+  When it lands, set `transient: true` on the block's text part and retire
+  the includeModels allowlist.
 - Step-limited agents (`steps` set): the block lands after core's
   `MAX_STEPS_PROMPT` assistant message, so the model's last input is the time
   block rather than the forced-summary instruction.
