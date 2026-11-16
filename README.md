@@ -9,7 +9,7 @@ Model-agnostic by default: with no configuration it applies to every model
 model filtering is available.
 
 Supports **OpenCode v1 and v2**. Type-checked against `@opencode-ai/plugin`
-1.18.27 and `@opencode/plugin` 2.2.0; live-tested on OpenCode 1.18.30 and 2.2.0.
+1.18.27 and `@opencode/plugin` 2.3.0; live-tested on OpenCode 1.18.30 and 2.3.0.
 
 ## What the model sees
 
@@ -46,9 +46,15 @@ Typical size: ~700–1500 characters (≈180–380 tokens), hard-capped by
 - any change near the front invalidates everything after it. A per-second `Now`
 block in the system layer recomputed the entire history of long sessions every
 turn (observed as full-history prefill storms and prefix-cache hit rates pinned
-at ~17%). At the tail, cache hits cover the whole history and only the genuinely
-new turn tokens are recomputed. The synthetic message is request-only: it is
-never written into the stored transcript, so nothing on disk ever goes stale.
+at ~17%). At the tail, implicit prefix caches (e.g. vLLM) cover the whole
+history and only the genuinely new turn tokens are recomputed. Explicit-breakpoint
+caches are the exception: OpenCode's cache policy marks the final message - this
+block - as the conversation breakpoint on Anthropic Messages routes, so history
+there pays cache-write instead of cache-read pricing while the block changes per
+request. Measure first (compare cache read vs write tokens); `excludeModels` can
+scope the plugin away from such models if it matters. The synthetic message is
+request-only: it is never written into the stored transcript, so nothing on
+disk ever goes stale.
 
 ### Where each timestamp comes from
 
@@ -56,7 +62,7 @@ never written into the stored transcript, so nothing on disk ever goes stale.
 |---|---|---|
 | `Now` / `UTC now` | `Date.now()` at request time | when this model request was built. Never cached. |
 | `Latest/Previous user message` | `UserMessage.time.created` | when that user message was admitted into the session |
-| `Latest assistant completion` | `AssistantMessage.time.completed` | when the last primary-agent reply finished |
+| `Latest assistant completion` | `AssistantMessage.time.completed` | when the last model step (assistant record) finished |
 | timeline `user message` | `UserMessage.time.created` | same as above |
 | timeline `assistant message completed` | `AssistantMessage.time.completed` | same as above |
 | timeline `tool "..." finished/failed` | v1 `ToolPart.state.time.end`; v2 tool `time.completed` | when a tool call settled |
@@ -67,7 +73,10 @@ ever included - only roles, coarse event kinds, tool names, and times.
 V1 derives timestamps from each request's message payload. V2 strips timestamps
 from model messages, so the adapter reads `ctx.session.context()` once per
 eligible request, inspects its last 64 records, and uses only records whose IDs
-are in the outgoing request. This API returns the whole active context (it has
+are in the outgoing request. One assistant record is stored per model step, so a
+turn longer than ~63 steps pushes the turn's own user record out of that window
+and `Latest user message` then anchors on an earlier turn (times stay correct).
+This API returns the whole active context (it has
 no limit parameter), not the full session transcript. No history bodies are
 cached or logged. The lookup has a one-second deadline; if it fails, the block
 still contains fresh current time and omits unknown history times.
@@ -94,9 +103,9 @@ array in `~/.config/opencode/cli.json`:
 ```
 
 V2 resolves `server.ts` and `tui.ts` through the checkout's package exports.
-Configuration changes reload automatically; use `/reload` to force a full
-reload. Restart the service after source or package-export changes if the old
-module remains cached.
+Configuration changes reload automatically, and OpenCode 2.3.0 also hot-reloads
+plugin source (the server watches the plugin's import graph). Use `/reload`
+after `package.json` or export-map changes.
 
 ### OpenCode v1
 
@@ -144,7 +153,7 @@ example is for v2; v1 continues to use its tuple form with `/src/index.ts`:
 | `timezone` | string (IANA) | host local timezone | Timezone for the `Now:`/local timestamps. Validated at startup; invalid values fall back to the host timezone with a warning. Note: this is the timezone of the machine running the OpenCode process - if you run OpenCode on a remote host, that's the remote host's timezone. |
 | `historyAnchorsLimit` | integer 0–12 | `6` | Max number of timeline anchors. `0` omits the timeline. |
 | `maxBlockChars` | integer 300–4000 | `1500` | Hard cap; oldest anchors are shed first, then headline history. Very small caps use a shorter timing rule. |
-| `debug` | boolean | `false` | Logs each injected block (timestamps only, never prompt contents) to OpenCode's log. |
+| `debug` | boolean | `false` | Logs each injected block (timestamps only, never prompt contents) to the plugin host's console (the OpenCode server process's stderr). |
 
 ### Model matching rules
 
@@ -166,7 +175,8 @@ injection proceeds; with any filters configured it is skipped. V1 logs a diagnos
 Declare the plugin in exactly one config file. In OpenCode 1.18.35 the same file
 declared in two places (e.g. global config *and* a project `opencode.json`, or
 also dropped into the auto-scanned `~/.config/opencode/plugin/`) can register
-**twice** with competing options. Stick to the single global entry above.
+**twice** with competing options. OpenCode 2.3.0 instead rejects duplicate plugin
+IDs at load; either way, stick to the single global entry above.
 (Technical background lives in AGENTS.md.)
 
 ## Request scope
@@ -198,9 +208,9 @@ invalid, or implausibly future history timestamps are omitted.
 ## Disable / uninstall
 
 - Temporarily: set `"enabled": false` in the plugin options.
-- Fully: delete the plugin entry from the `plugin` array in
-  `~/.config/opencode/opencode.jsonc`. Also remove the optional TUI entry from
-  `cli.json` (v2) or `tui.json` (v1).
+- Fully: delete the plugin entry from the `plugins` array (v2) or the `plugin`
+  array (v1) in `~/.config/opencode/opencode.jsonc`. Also remove the optional
+  TUI entry from `cli.json` (v2) or `tui.json` (v1).
   The checkout can remain on disk.
 
 ## Verify it works
@@ -209,8 +219,8 @@ Ask the model to quote the block - a reply containing it proves the injection
 reached the model-visible request (silent when excluded):
 
 ```bash
-# in any scratch dir:
-opencode run -m local-vllm/moonshotai/Kimi-K3 \
+# in any scratch dir, with any configured model (omit -m for the default):
+opencode run \
   'Without calling any tool: if your instructions contain a block starting
    with "[OpenCode time context]", quote that whole block verbatim; otherwise
    reply exactly NO_BLOCK'
@@ -225,6 +235,10 @@ opencode run -m local-vllm/moonshotai/Kimi-K3 \
   event timeline. Actively maintained, npm-unpublished.
 - `opencode-time-refresh` (npm) injects time by mutating persisted user messages
   - an anti-pattern this plugin avoids entirely (nothing here is stored).
+- As of OpenCode 2.3.0 there is still no native equivalent: the built-in
+  `core/date` instruction supplies only the calendar date (no time of day,
+  timezone, or per-message timestamps), and no request path renders message
+  times to the model.
 - Upstream demand is tracked in anomalyco/opencode issues #47251/#48639/#45570;
   a native core solution may supersede this plugin someday.
 

@@ -147,18 +147,19 @@ against the actual installed version before changing hook usage.
 Never claim model-visible delivery from logs alone — make the model quote it:
 
 ```bash
-# 1. Injection present, fresh values:
-cd /private/tmp/oc-smoke && opencode run -m local-vllm/moonshotai/Kimi-K3 \
+# 1. Injection present, fresh values (any configured model; omit -m for default):
+cd /private/tmp/oc-smoke && opencode run \
   'Without calling any tool: if your instructions contain a block starting
    with "[OpenCode time context]", quote that whole block verbatim; otherwise
    reply exactly NO_BLOCK'
 
-# 2. Filter governs the request (project-level tuple with options):
+# 2. Filter governs the request (project-level tuple with options; v1 key form -
+#    v2 uses the object options form from README):
 mkdir -p /private/tmp/oc-filter && cat > /private/tmp/oc-filter/opencode.json <<'EOF'
 { "plugin": [["file:///ABS/PATH/opencode-time-context/src/index.ts",
-  { "excludeModels": ["local-vllm/moonshotai/Kimi-K3"], "debug": true }]] }
+  { "excludeModels": ["<providerID>/<modelID>"], "debug": true }]] }
 EOF
-cd /private/tmp/oc-filter && opencode run -m local-vllm/moonshotai/Kimi-K3 \
+cd /private/tmp/oc-filter && opencode run -m <providerID>/<modelID> \
   --print-logs --log-level DEBUG '…same prompt…'
 # expect: NO_BLOCK + debug log 'injection skipped: … blocked by excludeModels'
 
@@ -189,6 +190,9 @@ records the judgment calls and their rejected alternatives.
    invalidate everything after it each turn (measured on vLLM-B300: hit rate
    pinned ~17% with full-history prefills every ~35 s). Same failure fixed
    third-party in opencode-agent-memory PR #25 (~10% → ~90% hit rate).
+   Tail placement earns those hits on implicit-cache routes only -
+   explicit-breakpoint hosts are the exception (see the V2 contract's cache
+   bullet).
    Rejected alternative: revert to `system.transform` with minute-bucketed
    timestamps — still periodic full-prefill storms, and it degrades the core
    feature (freshness) to save a problem we no longer have.
@@ -196,9 +200,11 @@ records the judgment calls and their rejected alternatives.
    date only when it changes (day granularity) and its open issue #38333
    documents a "repetition attractor" from identical text repeated across tool
    loops. We accept per-request refresh because: the block lives in the tail
-   region that recomputes regardless (zero cache cost), the content changes
-   every request (which defeats attractor drift, unlike Codex's static repeat),
-   and the feature's entire premise is sub-minute freshness across long turns.
+   region that implicit-cache routes recompute regardless (explicit-breakpoint
+   hosts are the exception - see the cache bullet in the V2 contract), the
+   content changes every request (which defeats attractor drift, unlike Codex's
+   static repeat), and the feature's entire premise is sub-minute freshness
+   across long turns.
    Fallback hedge if tool-loop repetition symptoms ever appear: add a refresh
    interval option (e.g. refresh Now at most every N seconds within a turn).
 3. **Ephemeral-only, never persisted.** The block exists only in the outgoing
@@ -223,7 +229,7 @@ records the judgment calls and their rejected alternatives.
    We document the pitfall instead of building config-snapshot merging to
    defend against it.
 
-## V2 runtime contract (OpenCode / @opencode/plugin 2.2.0)
+## V2 runtime contract (OpenCode / @opencode/plugin 2.3.0)
 
 - Root `server.ts` default-exports `{id, setup}`. `setup` awaits registration
   and returns a cleanup that disposes it. Root `tui.ts` is a no-op V2 definition.
@@ -243,11 +249,50 @@ records the judgment calls and their rejected alternatives.
   records and intersect outgoing message IDs. This avoids reintroducing pruned
   history or treating synthetic/compaction user-role messages as real users.
   No history pagination, private API, database access, or cached message bodies.
-- Context lookup races a one-second deadline and abort signal. Missing history
-  degrades to fresh current time. Error objects are not logged (they may contain
-  prompt text). All state is per invocation; no cross-session timestamp cache.
+  Window limitation: one assistant record is stored per model step, so a turn
+  longer than ~63 steps pushes the turn's own user record out of the window and
+  `Latest user message` anchors on an earlier turn (times stay correct;
+  `test/v2.test.ts` pins the window).
+- Context lookup races a one-second deadline; the abort signal passed beside it
+  is dropped by the promise-API adapter (it accepts only the input object), so
+  the deadline - not the signal - bounds the lookup, and the race timer is
+  always cleared. Missing history degrades to fresh current time. Error objects
+  are not logged (they may contain prompt text). All state is per invocation;
+  no cross-session timestamp cache.
 - Stored V2 user/assistant `time.created/completed` and assistant tool
   `time.completed` are numeric epoch milliseconds through the promise API.
+- Loading and types: the devDependency is type-only - the host serves the SDK
+  at runtime and throws if a plugin loads its own copy - so keep the exact pin.
+  2.3.0 added `SessionRequestMessage.metadata` (stripped before dispatch) and
+  retyped `Message` as a role union; the pushed trailing user message satisfies
+  it structurally, with no cast. 2.3.0 hot-reloads plugin source (watched
+  import graph) and rejects duplicate plugin IDs at load; export-map edits
+  still need `/reload`.
+- Mutating the shared hook event is sanctioned: `PluginHooks.trigger` passes
+  one event through callbacks in registration order, and built-in plan/goal
+  plugins splice `event.messages` the same way - their reminders insert before
+  a trailing user message, so the block stays last.
+- Native baseline (verified 2.3.0 + dev, 2026-11-16): built-in instructions
+  are `core/date` (host-zone calendar date only, frozen at session start;
+  rollovers arrive as `InstructionsUpdated` system rows the model does see)
+  and `core/environment`; no request path renders time-of-day or message
+  timestamps; the `schedule_list` tool is UTC-only, pull-based, flag-gated.
+  Nothing native overlaps this plugin.
+- Cache interaction: 2.3.0 `cache-policy.ts` marks the last message - our
+  block - as the conversation breakpoint on `anthropic-messages` routes, so
+  per-request block changes prevent history prefix-matching there: history is
+  cache-written (1.25x) every step instead of cache-read (0.1x). Not a 2.3.0
+  regression; implicit-cache routes (vLLM, e.g. glm-5.3) are unaffected; no
+  plugin-side fix (`model.request` exposes only baseURL/headers). Measure
+  `tokens.cache.read` vs `cache.write` before acting; stopgap is
+  `excludeModels`.
+- Step-limited agents (`steps` set): the block lands after core's
+  `MAX_STEPS_PROMPT` assistant message, so the model's last input is the time
+  block rather than the forced-summary instruction.
+- The 2.3.0 `claude-agent` provider fingerprints consecutive user-message
+  groups for session sync; a changing tail block makes saved group hashes
+  never match again, so every follow-up stops and forks. Not configured
+  today; if it ever is, add its models to `excludeModels` first.
 - `test/v2.test.ts` verifies fresh tail-only injection, byte-stable prefix,
   deduplication, filters, failures/timeouts, session isolation, bounded record
   processing, privacy, and registration disposal. Both SDK dependencies are
@@ -255,4 +300,8 @@ records the judgment calls and their rejected alternatives.
 - For V2 smoke tests use the directory URL and `opencode run --standalone`
   with isolated XDG directories. Ask the real model to quote its final block,
   resume the session, check a tool continuation, test exclusion, and inspect
-  stored message IDs to ensure the ephemeral row was not persisted.
+  stored message IDs to ensure the ephemeral row was not persisted. Verified on
+  OpenCode 2.3.0 (2026-11-16): fresh-session quote test via `opencode run`
+  passed; primary + subagent injection, tool continuations, and per-request
+  freshness observed live; the smoke session's stored messages contain no
+  `msg_time_context_ephemeral` row.
