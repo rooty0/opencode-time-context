@@ -3,6 +3,8 @@ import type { SessionContext } from "@opencode/plugin/promise/session"
 import { buildBlock, isModelEligible, parseOptions, type UserMark, type AssistantMark, type ToolMark } from "./core.ts"
 
 const EPHEMERAL_ID = "msg_time_context_ephemeral"
+// Bounds assistant/tool (timeline) processing only; user anchors are exempt and
+// scan the whole returned context (id + created, never bodies).
 const MAX_RECORDS = 64
 const LOOKUP_TIMEOUT_MS = 1000
 
@@ -54,17 +56,25 @@ export function createV2ContextHook(deps: V2Deps) {
             }, deps.lookupTimeoutMs ?? LOOKUP_TIMEOUT_MS)
           }),
         ])
-        for (const record of records.slice(-MAX_RECORDS)) {
-          if (!ids.has(record.id)) continue
-          if (record.type === "user") {
-            users.push({ id: record.id, created: record.time.created })
-          } else if (record.type === "assistant") {
-            assistants.push({ id: record.id, created: record.time.created, completed: record.time.completed, mode: record.agent })
-            for (const part of record.content) {
-              if (part.type !== "tool" || !["completed", "error"].includes(part.state.status)) continue
-              tools.push({ id: part.id, tool: part.name, end: part.time.completed, failed: part.state.status === "error" })
+        // A long turn stores one assistant record per model step, which pushes the
+        // turn's own user record past any fixed tail window. User anchors therefore
+        // scan the whole returned context; assistant/tool records stay windowed so
+        // body processing stays bounded.
+        const cutoff = records.length - MAX_RECORDS
+        let index = 0
+        for (const record of records) {
+          if (ids.has(record.id)) {
+            if (record.type === "user") {
+              users.push({ id: record.id, created: record.time.created })
+            } else if (record.type === "assistant" && index >= cutoff) {
+              assistants.push({ id: record.id, created: record.time.created, completed: record.time.completed, mode: record.agent })
+              for (const part of record.content) {
+                if (part.type !== "tool" || !["completed", "error"].includes(part.state.status)) continue
+                tools.push({ id: part.id, tool: part.name, end: part.time.completed, failed: part.state.status === "error" })
+              }
             }
           }
+          index++
         }
       } catch {
         // Do not log error objects: upstream errors can contain conversation text.

@@ -103,8 +103,10 @@ against the actual installed version before changing hook usage.
    only with debug enabled). Evaluated per request, never at init.
 7. Bounded resources: per-session maps capped; registry LRU-capped; block
    hard-capped by `maxBlockChars`. V1 history comes from the single
-   request payload. V2 reads active context with a deadline and processes only
-   the last 64 records (see the V2 contract below).
+   request payload. V2 reads active context with a deadline; assistant/tool
+   timeline processing is bounded to the last 64 records, while user anchors
+   scan the whole returned context (id + created only - see the V2 contract
+   below).
 8. Request scope: primary agent turns + subagent turns only. Skip when the
    payload has no user message, or when the event mirror says the session's
    only pending assistant work is auxiliary (`compaction`/`title`/`summary`
@@ -245,14 +247,15 @@ records the judgment calls and their rejected alternatives.
   user model message; never mutate the admission `prompt` hook or system array.
 - Necessary exception to V1's no-extra-fetch rule: read the public
   `ctx.session.context({sessionID})` once per eligible request. It returns the
-  whole active context, without a limit argument. Process only its last 64
-  records and intersect outgoing message IDs. This avoids reintroducing pruned
-  history or treating synthetic/compaction user-role messages as real users.
-  No history pagination, private API, database access, or cached message bodies.
-  Window limitation: one assistant record is stored per model step, so a turn
-  longer than ~63 steps pushes the turn's own user record out of the window and
-  `Latest user message` anchors on an earlier turn (times stay correct;
-  `test/v2.test.ts` pins the window).
+  whole active context, without a limit argument. Intersect outgoing message
+  IDs, process the last 64 records for the assistant/tool timeline, and scan
+  the whole returned context for user anchors (id + created only). This avoids
+  reintroducing pruned history or treating synthetic/compaction user-role
+  messages as real users. No history pagination, private API, database access,
+  or cached message bodies. The user-anchor scan is exempt from the window
+  because a long turn stores one assistant record per model step, which pushes
+  the turn's own user record past any fixed tail window
+  (`test/v2.test.ts` pins the split).
 - Context lookup races a one-second deadline; the abort signal passed beside it
   is dropped by the promise-API adapter (it accepts only the input object), so
   the deadline - not the signal - bounds the lookup, and the race timer is
@@ -283,9 +286,15 @@ records the judgment calls and their rejected alternatives.
   per-request block changes prevent history prefix-matching there: history is
   cache-written (1.25x) every step instead of cache-read (0.1x). Not a 2.3.0
   regression; implicit-cache routes (vLLM, e.g. glm-5.3) are unaffected; no
-  plugin-side fix (`model.request` exposes only baseURL/headers). Measure
-  `tokens.cache.read` vs `cache.write` before acting; stopgap is
-  `excludeModels`.
+  plugin-side fix (`model.request` exposes only baseURL/headers). Confirmed by
+  measurement on a claude-sonnet-5-5 model over an anthropic-messages route
+  (2026-11-16, 7-step session): with the block, every step reads only the pinned ~13.3K tools+system
+  prefix and re-writes the whole conversation; without it, steps read the full
+  ~15.3K prompt and write only ~0.1K per-step deltas. The per-step penalty
+  scales with conversation size (written at 1.25x instead of read at 0.1x), so
+  long Claude sessions pay most. Stopgap is `excludeModels`; the durable fix
+  is upstream (tail selection should skip the ephemeral trailing message, as
+  it already skips effort-update messages).
 - Step-limited agents (`steps` set): the block lands after core's
   `MAX_STEPS_PROMPT` assistant message, so the model's last input is the time
   block rather than the forced-summary instruction.

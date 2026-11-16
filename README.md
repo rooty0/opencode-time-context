@@ -50,9 +50,11 @@ at ~17%). At the tail, implicit prefix caches (e.g. vLLM) cover the whole
 history and only the genuinely new turn tokens are recomputed. Explicit-breakpoint
 caches are the exception: OpenCode's cache policy marks the final message - this
 block - as the conversation breakpoint on Anthropic Messages routes, so history
-there pays cache-write instead of cache-read pricing while the block changes per
-request. Measure first (compare cache read vs write tokens); `excludeModels` can
-scope the plugin away from such models if it matters. The synthetic message is
+there is cache-written instead of cache-read while the block changes per request
+(confirmed by measurement on claude-sonnet, 2026-11-16: each step re-wrote the
+whole conversation instead of reading it). `excludeModels` can scope the plugin
+away from such models; the penalty scales with conversation size, so long
+Claude sessions are where it matters. The synthetic message is
 request-only: it is never written into the stored transcript, so nothing on
 disk ever goes stale.
 
@@ -72,11 +74,10 @@ ever included - only roles, coarse event kinds, tool names, and times.
 
 V1 derives timestamps from each request's message payload. V2 strips timestamps
 from model messages, so the adapter reads `ctx.session.context()` once per
-eligible request, inspects its last 64 records, and uses only records whose IDs
-are in the outgoing request. One assistant record is stored per model step, so a
-turn longer than ~63 steps pushes the turn's own user record out of that window
-and `Latest user message` then anchors on an earlier turn (times stay correct).
-This API returns the whole active context (it has
+eligible request and uses only records whose IDs are in the outgoing request:
+the last 64 records supply the assistant/tool timeline, while user anchors scan
+the whole returned context (id + created only), so long turns keep an accurate
+`Latest user message`. This API returns the whole active context (it has
 no limit parameter), not the full session transcript. No history bodies are
 cached or logged. The lookup has a one-second deadline; if it fails, the block
 still contains fresh current time and omits unknown history times.

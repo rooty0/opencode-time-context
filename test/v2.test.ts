@@ -81,17 +81,30 @@ test("v2: lookup failures, timeouts and logging failures fail open without inven
   }
 })
 
-test("v2: context lookup is session-local and only last 64 matching records supply times", async () => {
-  const run = hook({ context: async ({ sessionID }) => {
-    if (sessionID === "session-a") return records
-    return [records[0]!, ...Array.from({ length: 64 }, (_, i) => ({
-      id: `other-${i}`, type: "user" as const, time: { created: NOW - 1000 }, text: SECRET,
-    }))]
-  } })
-  const a = event(), b = event("session-b")
+test("v2: session-local lookup; user anchors rescue from beyond the 64-record timeline window", async () => {
+  // 66 records: the turn's own user record and an old assistant record sit
+  // outside the 64-record tail window. The user must still anchor the block;
+  // the out-of-window assistant must not (timeline processing stays bounded).
+  const longRecords: Records = [
+    { id: "a-out", type: "assistant", agent: "build", model: { providerID: "local", id: "model" },
+      time: { created: NOW - 7000, completed: NOW - 6000 }, content: [] },
+    { id: "u1", type: "user", time: { created: NOW - 10_000 }, text: SECRET },
+    ...Array.from({ length: 64 }, (_, i) => ({
+      id: `filler-${i}`, type: "user" as const, time: { created: NOW - 1000 }, text: SECRET,
+    })),
+  ]
+  const run = hook({ context: async ({ sessionID }) => (sessionID === "session-a" ? records : longRecords) })
+  const a = event()
+  const b = event("session-b")
+  b.messages = [
+    { id: "u1", role: "user", content: [{ type: "text", text: SECRET }] },
+    { id: "a-out", role: "assistant", content: [{ type: "text", text: SECRET }] },
+  ] as SessionContext["messages"]
   await Promise.all([run(a), run(b)])
   assert.match(block(a), /Latest user message/)
-  assert.doesNotMatch(block(b), /Latest user|Latest assistant/)
+  assert.match(block(a), /Latest assistant completion/)
+  assert.match(block(b), /Latest user message: .*10 sec ago/)
+  assert.doesNotMatch(block(b), /Latest assistant|Recent timeline/)
 })
 
 test("entrypoints: v1 function retained; v2 registers only context and disposes hook", async () => {
