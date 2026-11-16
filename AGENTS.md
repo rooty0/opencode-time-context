@@ -226,7 +226,7 @@ the judgment calls and their rejected alternatives.
   mitigation: `includeModels` allowlists the implicit-cache models so
   explicit-breakpoint models get no block at all; the durable fix is upstream
   (tail selection should skip the ephemeral trailing message, as it already
-  skips effort-update messages).
+  skips effort-update messages; reported as anomalyco/opencode#64311).
 - Step-limited agents (`steps` set): the block lands after core's
   `MAX_STEPS_PROMPT` assistant message, so the model's last input is the time
   block rather than the forced-summary instruction.

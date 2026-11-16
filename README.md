@@ -222,6 +222,9 @@ opencode run \
   times to the model.
 - Upstream demand is tracked in anomalyco/opencode issues #47251/#48639/#45570;
   a native core solution may supersede this plugin someday.
+- The cache-breakpoint interaction on Anthropic Messages routes is reported
+  upstream as anomalyco/opencode#64311; the `includeModels` mitigation
+  described above retires when it is fixed.
 
 ## Contributing
 
