@@ -49,28 +49,37 @@ block in the system layer recomputed the entire history of long sessions every
 turn (observed as full-history prefill storms and prefix-cache hit rates pinned
 at ~17%). At the tail, implicit prefix caches (e.g. vLLM) cover the whole
 history and only the genuinely new turn tokens are recomputed. Explicit-breakpoint
-caches are the exception: OpenCode's cache policy marks the final message - this
-block - as the conversation breakpoint on Anthropic Messages routes, so history
-there is cache-written instead of cache-read while the block changes per request
-(confirmed by measurement on claude-sonnet, 2026-11-16: each step re-wrote the
-whole conversation instead of reading it). The cleanest scope on a mixed fleet
-is an `includeModels` allowlist of the implicit-cache models (the adopted
+caches are the exception, and the cause is positional, not content: the cache
+policy places the conversation breakpoint on the final message, which for
+requests carrying this plugin is the request-only block - the cache entry
+then ends in content no later request repeats at that position, and a
+byte-identical block would cost the same. Measured on a claude-sonnet-5-5
+session (2026-11-16): every steady-state step re-wrote the whole conversation
+instead of reading it. The same auto-breakpoint policy covers more than
+Anthropic's own routes (Bedrock, Vertex, Moonshot, MiniMax, Z.ai, several
+gateways, and any model declaring `cacheFormat: "anthropic"`), so scope by
+caching behavior, not provider name. The cleanest scope on a mixed fleet is an
+`includeModels` allowlist of the implicit-cache models (the adopted
 configuration here); `excludeModels` can carve out models the other way. The
-penalty scales with conversation size, so long
-Claude sessions are where it matters. The synthetic message is
+penalty scales with conversation size, so long sessions on those routes are
+where it matters. Two untested plugin-side levers exist on 2.3.0 hosts: a
+manual `cache` hint on a text part is honored within the breakpoint cap, and
+the `http.request` hook exposes a writable request - a manual hint on the
+last stable message is the experiment to run if an explicit-breakpoint model
+must come back into scope before the upstream fix. The synthetic message is
 request-only: it is never written into the stored transcript, so nothing on
 disk ever goes stale.
 
 ### Where each timestamp comes from
 
-| Block field | Source (all epoch-ms from OpenCode's store) | Semantics |
+| Block field | Source (epoch-ms from OpenCode's session store, except `Now`) | Semantics |
 |---|---|---|
 | `Now` / `UTC now` | `Date.now()` at request time | when this model request was built. Never cached. |
-| `Latest/Previous user message` | `UserMessage.time.created` | when that user message was admitted into the session |
-| `Latest assistant completion` | `AssistantMessage.time.completed` | when the last model step (assistant record) finished |
-| timeline `user message` | `UserMessage.time.created` | same as above |
-| timeline `assistant message completed` | `AssistantMessage.time.completed` | same as above |
-| timeline `tool "..." finished/failed` | tool `time.completed` | when a tool call settled |
+| `Latest/Previous user message` | user record `time.created` | when that user message was admitted into the session |
+| `Latest assistant completion` | assistant record `time.completed` | when the last model step (assistant record) finished |
+| timeline `user message` | user record `time.created` | same as above |
+| timeline `assistant message completed` | assistant record `time.completed` | same as above |
+| timeline `tool "..." finished/failed` | tool part `time.completed` | when a tool call settled |
 
 No message text, tool arguments/outputs, file contents, or conversation bodies are
 ever included - only roles, coarse event kinds, tool names, and times.
@@ -113,8 +122,10 @@ does not disable server injection; use the server's `enabled` option below.
 
 ## Configuration
 
-Turn the string entry into an object to set options (only in the **one** config
-file where the plugin is declared - see "Declare it exactly once" below):
+With no options every model is eligible, including explicit-breakpoint models
+where the cache penalty above applies; use `includeModels` to scope injection
+down. Turn the string entry into an object to set options (only in the **one**
+config file where the plugin is declared - see "Declare it exactly once" below):
 
 ```jsonc
 "plugins": [
@@ -136,7 +147,7 @@ file where the plugin is declared - see "Declare it exactly once" below):
 | Option | Type | Default | Meaning |
 |---|---|---|---|
 | `enabled` | boolean | `true` | `false` disables injection entirely. |
-| `includeModels` | string[] | `[]` | Empty = all models eligible. Nonempty = only matches are eligible. |
+| `includeModels` | string[] | `[]` | Empty = all models eligible. Nonempty = only matches are eligible. An invalid entry (non-string or blank) discards the whole list with a console warning and silently re-enables every model. |
 | `excludeModels` | string[] | `[]` | Blocks matches; **exclusion wins** when both lists match. |
 | `timezone` | string (IANA) | host local timezone | Timezone for the `Now:`/local timestamps. Validated at startup; invalid values fall back to the host timezone with a warning. Note: this is the timezone of the machine running the OpenCode process - if you run OpenCode on a remote host, that's the remote host's timezone. |
 | `historyAnchorsLimit` | integer 0–12 | `6` | Max number of timeline anchors. `0` omits the timeline. |
@@ -179,9 +190,11 @@ without user messages and filtered-out models are skipped.
 
 ## Diagnostics and failure behavior
 
-With `debug: true`, injected time blocks and filter decisions are logged per
-request to the plugin host's console (the OpenCode server process's stderr).
-No conversation bodies or upstream error objects are logged.
+With `debug: true`, injected time blocks and filter-skip decisions are logged
+per request to the plugin host's console (the OpenCode server process's
+stderr); config warnings and a `failed to build` diagnostic are logged
+regardless of `debug`. No conversation bodies or upstream error objects are
+logged.
 
 Hooks fail open: unavailable history produces current-time-only context;
 unexpected errors skip injection without breaking the request. Missing,
@@ -202,7 +215,7 @@ reached the model-visible request (silent when excluded):
 ```bash
 # in any scratch dir, with any configured model (omit -m for the default):
 opencode run \
-  'Without calling any tool: if your instructions contain a block starting
+  'Without calling any tool: if this conversation contains a block starting
    with "[OpenCode time context]", quote that whole block verbatim; otherwise
    reply exactly NO_BLOCK'
 ```
@@ -222,18 +235,24 @@ opencode run \
   times to the model.
 - Upstream demand is tracked in anomalyco/opencode issues #47251/#48639/#45570;
   a native core solution may supersede this plugin someday.
-- The cache-breakpoint interaction on Anthropic Messages routes is tracked
+- The cache-breakpoint interaction on explicit-breakpoint routes is tracked
   upstream as anomalyco/opencode#62554 (fix in flight: PR #63498 adds a
   `transient` text-part flag so breakpoints stop before request-local
-  content; our report #64311 was closed as its duplicate). When it lands,
-  set `transient: true` on the block's text part and retire the
-  `includeModels` mitigation described above.
+  content; our report #64311 was closed as its duplicate). Adoption
+  conditions: the PR is still unreviewed (API may change), the flag is not in
+  2.3.0 types (the `@opencode/plugin` pin must bump first, and setting it
+  today would fail typecheck), and it is a no-op on hosts that do not ship
+  the fix - so retire the `includeModels` mitigation only on hosts that do,
+  and re-measure when it lands.
 
 ## Contributing
 
 ```bash
 npm install && npm test && npm run typecheck
 ```
+
+Node >= 23.6 runs the TypeScript tests natively (type stripping); there is no
+build step.
 
 Architecture, the verified OpenCode runtime contract, design invariants, and
 deeper smoke recipes live in [AGENTS.md](AGENTS.md).

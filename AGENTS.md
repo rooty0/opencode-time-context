@@ -20,7 +20,7 @@ test/            node:test suites driving core directly and the hook via stubs.
 ```bash
 npm install          # the @opencode/plugin devDep provides the SDK types
 npm test             # node --test; Node >= 23.6 runs .ts natively (type stripping)
-npm run typecheck    # tsc --noEmit --strict
+npm run typecheck    # tsc --noEmit (strict comes from tsconfig)
 ```
 
 Run both before committing. No build step: OpenCode loads the TypeScript source
@@ -37,8 +37,8 @@ directly at runtime (Bun), Node strips types in tests.
    request). Wrap hook bodies in try/catch; on errors skip or degrade, never
    fabricate timestamps. Missing/invalid times → omit that line. Negative
    durations → clamp. Far-future anchors (>60s) → drop.
-4. Nothing prompt-derived crosses boundaries: the block, the state, and the logs
-   contain only roles, coarse event kinds, tool NAMES, and timestamps. Assert
+4. Nothing prompt-derived crosses boundaries: the block and the logs contain
+   only roles, coarse event kinds, tool NAMES, and timestamps. Assert
    this in tests (see the SECRET-PROMPT-CONTENTS fixture).
 5. Session isolation: the context lookup is keyed by the request's sessionID; a
    child (subagent) session gets only its own timeline. `Session.parentID` is
@@ -49,9 +49,10 @@ directly at runtime (Bun), Node strips types in tests.
    when filters exist (logged per request only with debug enabled). Evaluated
    per request, never at init.
 7. Bounded resources: block hard-capped by `maxBlockChars`. Active context is
-   read with a deadline; assistant/tool timeline processing is bounded to the
-   last 64 records, while user anchors scan the whole returned context
-   (id + created only - see the runtime contract below).
+   read with a deadline; assistant records (the latest-assistant headline and
+   the assistant/tool timeline) are bounded to the last 64 records, while user
+   anchors scan the whole returned context (id + created only - see the
+   runtime contract below).
 8. Request scope: primary agent turns + subagent turns only (the `context`
    hook). Requests without user messages and models filtered out are skipped.
    Title, compaction, and generate requests have separate hooks and receive no
@@ -78,27 +79,35 @@ directly at runtime (Bun), Node strips types in tests.
 - `test/v2.test.ts` — the context hook with stubbed lookups: injection and
   dedup, filters, failure/timeout paths, window and record-type semantics,
   registration disposal.
-- When adding behavior: unit-test the pure part, hook-test the wiring, and keep
-  matrix-style test names referencing the requirement numbers.
+- When adding behavior: unit-test the pure part, hook-test the wiring, and name
+  tests after the behavior they pin.
 
 ## End-to-end verification (after changes to injection/filtering)
 
 Never claim model-visible delivery from logs alone — make the model quote it:
 
 ```bash
-# 1. Injection present, fresh values (any configured model; omit -m for default):
-cd /private/tmp/oc-smoke && opencode run \
-  'Without calling any tool: if your instructions contain a block starting
+# 1. Injection present, fresh values. Isolated XDG + --standalone: a minimal
+#    config declares ONLY this plugin, keeping the test off the shared service
+#    and the real global config:
+export XDG_CONFIG_HOME=/private/tmp/oc-xdg && mkdir -p "$XDG_CONFIG_HOME/opencode"
+printf '{ "plugins": ["file:///ABS/PATH/opencode-time-context"] }\n' \
+  > "$XDG_CONFIG_HOME/opencode/opencode.json"
+cd /private/tmp/oc-smoke && opencode run --standalone \
+  'Without calling any tool: if this conversation contains a block starting
    with "[OpenCode time context]", quote that whole block verbatim; otherwise
    reply exactly NO_BLOCK'
 
-# 2. Filter governs the request (project-level config with options):
-mkdir -p /private/tmp/oc-filter && cat > /private/tmp/oc-filter/opencode.json <<'EOF'
+# 2. Filter governs the request. A DIFFERENT empty XDG root, so the project
+#    config below is the only declaration (never combine this with a global
+#    install - that is the double declaration README warns about):
+mkdir -p /private/tmp/oc-filter-xdg /private/tmp/oc-filter
+cat > /private/tmp/oc-filter/opencode.json <<'EOF'
 { "plugins": [{ "package": "file:///ABS/PATH/opencode-time-context",
   "options": { "excludeModels": ["<providerID>/<modelID>"], "debug": true } }] }
 EOF
-cd /private/tmp/oc-filter && opencode run -m <providerID>/<modelID> \
-  '…same prompt…'
+cd /private/tmp/oc-filter && XDG_CONFIG_HOME=/private/tmp/oc-filter-xdg opencode run --standalone \
+  -m <providerID>/<modelID> '…same prompt…'
 # expect: NO_BLOCK
 
 # 3. Resume (`--continue` shows seeded history), subagent isolation (task tool
@@ -143,6 +152,9 @@ the judgment calls and their rejected alternatives.
    freshness across long turns.
    Fallback hedge if tool-loop repetition symptoms ever appear: add a refresh
    interval option (e.g. refresh Now at most every N seconds within a turn).
+   (This hedge addresses attractor drift only: on explicit-breakpoint routes
+   the cache penalty is positional, so diff-gating the block's content would
+   not help there.)
 3. **Ephemeral-only, never persisted.** The block exists only in the outgoing
    request payload. Anything written into the stored transcript permanently
    freezes the claim ("15 sec ago" forever) — that's the failure mode of
@@ -175,16 +187,19 @@ the judgment calls and their rejected alternatives.
 - The one sanctioned extra read: `ctx.session.context({sessionID})` once per
   eligible request. It returns the whole active context, without a limit
   argument. Intersect outgoing message IDs, process the last 64 records for
-  the assistant/tool timeline, and scan the whole returned context for user
+  the assistant records (latest-assistant headline and timeline), and scan
+  the whole returned context for user
   anchors (id + created only). This avoids reintroducing pruned history or
   treating synthetic/compaction user-role messages as real users. No history
   pagination, private API, database access, or cached message bodies. The
   user-anchor scan is exempt from the window because a long turn stores one
   assistant record per model step, which pushes the turn's own user record past
   any fixed tail window (`test/v2.test.ts` pins the split).
-- Context record types are user/assistant/idle/compaction (compaction rows are
-  their own type, verified live 2026-11-16), so the adapter's type checks skip
-  them; agent names are never filtered, so a custom agent with a name like
+- The context record union has more members than user/assistant/idle/compaction
+  (verified live 2026-11-16: compaction rows are their own type, not assistant
+  modes); the adapter positively matches only `user` and `assistant`, so every
+  other record type - compaction, idle, synthetic, and the rest - is skipped
+  by type. Agent names are never filtered, so a custom agent with a name like
   "summary" stays visible (`test/v2.test.ts` pins it).
 - Context lookup races a one-second deadline; the abort signal passed beside it
   is dropped by the promise-API adapter (it accepts only the input object), so
@@ -204,32 +219,46 @@ the judgment calls and their rejected alternatives.
 - Mutating the shared hook event is sanctioned: `PluginHooks.trigger` passes
   one event through callbacks in registration order, and built-in plan/goal
   plugins splice `event.messages` the same way - their reminders insert before
-  a trailing user message, so the block stays last.
+  a trailing user message, so the block stays last. Upstream PR #63498 changes
+  the built-ins to append reminders into the trailing user message; re-verify
+  block placement once a host ships it.
 - Native baseline (verified 2.3.0 + dev, 2026-11-16): built-in instructions
   are `core/date` (host-zone calendar date only, frozen at session start;
   rollovers arrive as `InstructionsUpdated` system rows the model does see)
   and `core/environment`; no request path renders time-of-day or message
   timestamps; the `schedule_list` tool is UTC-only, pull-based, flag-gated.
   Nothing native overlaps this plugin.
-- Cache interaction: 2.3.0 `cache-policy.ts` marks the last message - our
-  block - as the conversation breakpoint on `anthropic-messages` routes, so
-  per-request block changes prevent history prefix-matching there: history is
-  cache-written (1.25x) every step instead of cache-read (0.1x). Not a 2.3.0
-  regression; implicit-cache routes (vLLM, e.g. glm-5.3) are unaffected; no
-  plugin-side fix (`model.request` exposes only baseURL/headers). Confirmed by
-  measurement on a claude-sonnet-5-5 model over an anthropic-messages route
-  (2026-11-16, 7-step session): with the block, every step reads only the
-  pinned ~13.3K tools+system prefix and re-writes the whole conversation;
-  without it, steps read the full ~15.3K prompt and write only ~0.1K per-step
-  deltas. The per-step penalty scales with conversation size (written at 1.25x
-  instead of read at 0.1x), so long Claude sessions pay most. Adopted
-  mitigation: `includeModels` allowlists the implicit-cache models so
-  explicit-breakpoint models get no block at all; the durable fix is upstream:
+- Cache interaction: 2.3.0 `cache-policy.ts` places the conversation
+  breakpoint on the final request message - our block when injected. The cause
+  is positional, not content: the cache entry ends in a request-only message
+  that no later request repeats at that position, so history never
+  prefix-matches and is cache-written (1.25x) every step instead of
+  cache-read (0.1x); a byte-identical block would cost the same. Applies to
+  every route the policy maps to auto breakpoints (Bedrock, Vertex, Moonshot,
+  MiniMax, Z.ai, several gateways, OpenRouter anthropic/*, alibaba-chat Qwen,
+  plus any model declaring `cacheFormat: "anthropic"`), not just
+  anthropic-messages; implicit-cache routes (vLLM, e.g. glm-5.3) are
+  unaffected. Not a 2.3.0 regression. Confirmed by measurement on a
+  claude-sonnet-5-5 model over an anthropic-messages route (2026-11-16, 7-step
+  session): with the block, every steady-state step reads only the pinned
+  ~13.3K tools+system prefix and re-writes the whole conversation; without it,
+  steps read the full ~15.3K prompt and write only ~0.1K per-step deltas. The
+  per-step penalty scales with conversation size, so long sessions on those
+  routes pay most. Plugin-side levers exist on 2.3.0 but are untested here: a
+  manual `cache` hint on a text part is honored within the 4-breakpoint cap,
+  and the `http.request` hook exposes a writable request - a manual hint on
+  the last stable message is the experiment to run if an explicit-breakpoint
+  model must come back into scope (needs an invariant-2 carve-out: the hint
+  edits the request, though not `messages`). Adopted mitigation:
+  `includeModels` allowlists the implicit-cache models so explicit-breakpoint
+  models get no block at all; the durable fix is upstream:
   anomalyco/opencode#62554, with the fix in flight as PR #63498 - a
   `transient` flag on text parts that makes cache policy place breakpoints
   before request-local content (our report #64311 closed as its duplicate).
-  When it lands, set `transient: true` on the block's text part and retire
-  the includeModels allowlist.
+  Adoption conditions: the PR is unreviewed (API may change), the flag is not
+  in 2.3.0 types (pin must bump first; setting it today fails typecheck), it
+  is a no-op on hosts without the fix - retire the includeModels allowlist
+  only on hosts that ship it, and re-measure when it lands.
 - Step-limited agents (`steps` set): the block lands after core's
   `MAX_STEPS_PROMPT` assistant message, so the model's last input is the time
   block rather than the forced-summary instruction.
