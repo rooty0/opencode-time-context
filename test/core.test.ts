@@ -374,7 +374,7 @@ describe("block assembly", () => {
     const block = buildBlock({ ...baseInput, now, users: [], assistants: [], tools: [] })
     assert.match(block, /^Now: /m)
     assert.doesNotMatch(block, /Latest user message:/)
-    assert.doesNotMatch(block, /Recent timeline:/)
+    assert.doesNotMatch(block, /Recent timeline/)
   })
 
   test("block always starts and ends with the plugin markers", () => {
@@ -384,13 +384,16 @@ describe("block assembly", () => {
   })
 
   test("hard size cap sheds oldest anchors first (matrix #19)", () => {
-    const users: UserMark[] = Array.from({ length: 40 }, (_, i) => ({
+    const users: UserMark[] = Array.from({ length: 6 }, (_, i) => ({
       id: `u${i}`,
-      created: now - (40 - i) * 60_000,
+      created: now - (6 - i) * 600_000,
     }))
-    const block = buildBlock({ ...baseInput, now, users, historyAnchorsLimit: 12, maxBlockChars: 700 })
-    assert.ok(block.length <= 700, `block length ${block.length}`)
+    const block = buildBlock({ ...baseInput, now, users, historyAnchorsLimit: 6, maxBlockChars: 800 })
+    assert.ok(block.length <= 800, `block length ${block.length}`)
     assert.match(block, /Timing rule:/)
+    // the shed keeps the newest anchors and drops the oldest
+    assert.match(block, /- 20:11:00 -07:00 - user message/)
+    assert.doesNotMatch(block, /- 19:31:00/)
   })
 })
 

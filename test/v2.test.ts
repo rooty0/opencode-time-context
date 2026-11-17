@@ -25,7 +25,10 @@ const records: Records = [
     ] },
 ]
 function block(e: SessionContext) {
-  const part = e.messages.at(-1)?.content[0]
+  const tail = e.messages.at(-1)
+  assert.equal(tail?.role, "user", "tail message role")
+  assert.equal(tail?.id, "msg_time_context_ephemeral", "tail message id")
+  const part = tail?.content[0]
   assert.equal(part?.type, "text")
   return (part as { text: string }).text
 }
@@ -67,8 +70,10 @@ test("v2: filters use request model, exclusion wins, disabled/no-user requests d
   await run(e)
   assert.equal(e.messages.length, 2)
   e.messages = []
-  await hook({ context: async () => { assert.fail("must not read") } })(e)
+  let reads = 0
+  await hook({ context: async () => { reads++; return records } })(e)
   assert.equal(e.messages.length, 0)
+  assert.equal(reads, 0)
 })
 
 test("v2: lookup failures, timeouts and logging failures fail open without invented history", async () => {
@@ -80,15 +85,28 @@ test("v2: lookup failures, timeouts and logging failures fail open without inven
   }
 })
 
-test("v2: session-local lookup; user anchors rescue from beyond the 64-record timeline window", async () => {
-  // 66 records: the turn's own user record and an old assistant record sit
-  // outside the 64-record tail window. The user must still anchor the block;
-  // the out-of-window assistant must not (timeline processing stays bounded).
+test("v2: session-local lookup; the 64-record window boundary is exact, user anchors exempt", async () => {
+  // 68 records, cutoff = 4: indices 0-3 sit outside the tail window.
+  // u1 (idx 0) must be rescued as a user anchor; a-out (idx 1) and a-edge
+  // (idx 3, one below the cutoff) must NOT anchor; a-in (idx 4, exactly at
+  // the cutoff) and its tool must. Any off-by-one in the cutoff fails one
+  // of the assertions below.
   const longRecords: Records = [
-    { id: "a-out", type: "assistant", agent: "build", model: { providerID: "local", id: "model" },
-      time: { created: NOW - 7000, completed: NOW - 6000 }, content: [] },
     { id: "u1", type: "user", time: { created: NOW - 10_000 }, text: SECRET },
-    ...Array.from({ length: 64 }, (_, i) => ({
+    { id: "a-out", type: "assistant", agent: "build", model: { providerID: "local", id: "model" },
+      time: { created: NOW - 7000, completed: NOW - 6900 }, content: [
+        { type: "tool", id: "t-out", name: "bash", time: { created: NOW - 6800, completed: NOW - 6700 },
+          state: { status: "completed", input: {}, content: [{ type: "text", text: SECRET }] } },
+      ] },
+    { id: "gap-filler", type: "user", time: { created: NOW - 5500 }, text: SECRET },
+    { id: "a-edge", type: "assistant", agent: "build", model: { providerID: "local", id: "model" },
+      time: { created: NOW - 5000, completed: NOW - 4400 }, content: [] },
+    { id: "a-in", type: "assistant", agent: "build", model: { providerID: "local", id: "model" },
+      time: { created: NOW - 4000, completed: NOW - 3000 }, content: [
+        { type: "tool", id: "t-in", name: "read", time: { created: NOW - 2500, completed: NOW - 2000 },
+          state: { status: "completed", input: {}, content: [{ type: "text", text: SECRET }] } },
+      ] },
+    ...Array.from({ length: 63 }, (_, i) => ({
       id: `filler-${i}`, type: "user" as const, time: { created: NOW - 1000 }, text: SECRET,
     })),
   ]
@@ -98,12 +116,19 @@ test("v2: session-local lookup; user anchors rescue from beyond the 64-record ti
   b.messages = [
     { id: "u1", role: "user", content: [{ type: "text", text: SECRET }] },
     { id: "a-out", role: "assistant", content: [{ type: "text", text: SECRET }] },
+    { id: "a-edge", role: "assistant", content: [{ type: "text", text: SECRET }] },
+    { id: "a-in", role: "assistant", content: [{ type: "text", text: SECRET }] },
   ] as SessionContext["messages"]
   await Promise.all([run(a), run(b)])
   assert.match(block(a), /Latest user message/)
   assert.match(block(a), /Latest assistant completion/)
   assert.match(block(b), /Latest user message: .*10 sec ago/)
-  assert.doesNotMatch(block(b), /Latest assistant|Recent timeline/)
+  assert.match(block(b), /Latest assistant completion: .*3 sec ago/)
+  assert.match(block(b), /tool "read" finished/)
+  assert.doesNotMatch(block(b), /Previous user|7 sec ago|tool "bash"/)
+  // the timeline must hold only the in-window tool anchor; a permissive
+  // cutoff would leak a-edge as an extra assistant anchor
+  assert.equal((block(b).match(/assistant message completed/g) ?? []).length, 0)
 })
 
 test("v2: agent names never get filtered (an agent named summary stays visible)", async () => {
@@ -117,21 +142,42 @@ test("v2: agent names never get filtered (an agent named summary stays visible)"
   assert.match(block(e), /Latest assistant completion: .*1 sec ago/)
 })
 
-test("v2: compaction and idle records never supply users or anchors", async () => {
+test("v2: compaction, idle and synthetic records never supply users or anchors", async () => {
   const mixed = [
     { id: "u1", type: "user", time: { created: NOW - 10_000 }, text: SECRET },
     { id: "m-comp", type: "compaction", agent: "", time: { created: NOW - 5000 } },
     { id: "m-idle", type: "idle", agent: "", time: { created: NOW - 4000 } },
+    { id: "m-syn", type: "synthetic", agent: "", time: { created: NOW - 3000 } },
   ] as unknown as Records
   const e = event()
   e.messages = [
     { id: "u1", role: "user", content: [{ type: "text", text: SECRET }] },
     { id: "m-comp", role: "user", content: [{ type: "text", text: SECRET }] },
     { id: "m-idle", role: "user", content: [{ type: "text", text: SECRET }] },
+    { id: "m-syn", role: "user", content: [{ type: "text", text: SECRET }] },
   ] as SessionContext["messages"]
   await hook({ context: async () => mixed })(e)
   assert.match(block(e), /Latest user message: .*10 sec ago/)
   assert.doesNotMatch(block(e), /Latest assistant|Recent timeline|Previous user/)
+})
+
+test("v2: garbage history timestamps are omitted, never fabricated, through the hook", async () => {
+  const garbage: Records = [
+    { id: "u1", type: "user", time: { created: Number.NaN }, text: SECRET },
+    { id: "u2", type: "user", time: { created: -5 }, text: SECRET },
+    { id: "a1", type: "assistant", agent: "build", model: { providerID: "local", id: "model" },
+      time: { created: NOW - 9000, completed: NOW + 10 * 60_000 }, content: [] },
+  ]
+  const e = event()
+  e.messages = [
+    { id: "u1", role: "user", content: [{ type: "text", text: SECRET }] },
+    { id: "u2", role: "user", content: [{ type: "text", text: SECRET }] },
+    { id: "a1", role: "assistant", content: [{ type: "text", text: SECRET }] },
+  ] as SessionContext["messages"]
+  await hook({ context: async () => garbage })(e)
+  const text = block(e)
+  assert.match(text, /UTC now:/)
+  assert.doesNotMatch(text, /Latest user message|Latest assistant|Recent timeline|NaN/)
 })
 
 test("v2: running tool parts are excluded and errored tools render as failed", async () => {
@@ -202,6 +248,22 @@ test("v2: lookups settling after the deadline stay fail-open with no unhandled r
     process.off("unhandledRejection", onUnhandled)
   }
   assert.equal(unhandled.length, 0)
+})
+
+test("v2: configured timezone wins over the host's; anchors and caps flow through options", async () => {
+  const configured = event()
+  await hook({ options: { timezone: "America/Los_Angeles" }, hostTimezone: "Europe/Paris" })(configured)
+  assert.match(block(configured), /, America\/Los_Angeles\)/)
+  assert.doesNotMatch(block(configured), /Europe\/Paris/)
+  const fallback = event()
+  await hook({ hostTimezone: "Europe/Paris" })(fallback)
+  assert.match(block(fallback), /, Europe\/Paris\)/)
+  const capped = event()
+  await hook({ options: { historyAnchorsLimit: 0 } })(capped)
+  assert.doesNotMatch(block(capped), /Recent timeline/)
+  const trimmed = event()
+  await hook({ options: { maxBlockChars: 300 } })(trimmed)
+  assert.ok(block(trimmed).length <= 300)
 })
 
 test("entrypoints: registers only context and disposes hook", async () => {
